@@ -1,0 +1,160 @@
+/**
+ * Central Configuration Manager
+ * 
+ * This module loads and validates all environment variables.
+ * Uses a centralized approach to prevent scattered process.env calls.
+ * 
+ * @author WallX Engineering Team
+ */
+
+import dotenv from 'dotenv';
+
+// Load environment variables
+dotenv.config();
+
+/**
+ * Validates that required environment variables are present
+ */
+function validateConfig() {
+  const required = [
+    'DATABASE_URL',
+    'JWT_ACCESS_SECRET',
+    'JWT_REFRESH_SECRET',
+    'SUPABASE_URL',
+    'SUPABASE_SERVICE_ROLE_KEY',
+  ];
+
+  const missing = required.filter((key) => !process.env[key]);
+
+  if (missing.length > 0) {
+    throw new Error(
+      `Missing required environment variables: ${missing.join(', ')}\n` +
+      'Please check your .env file against .env.example'
+    );
+  }
+}
+
+// Run validation on import
+validateConfig();
+
+/**
+ * Application Configuration Object
+ */
+export const config = {
+  // Application
+  app: {
+    env: process.env.NODE_ENV || 'development',
+    port: parseInt(process.env.PORT || '3000', 10),
+    apiVersion: process.env.API_VERSION || 'v1',
+    isDevelopment: process.env.NODE_ENV === 'development',
+    isProduction: process.env.NODE_ENV === 'production',
+  },
+
+  // Database
+  database: {
+    url: process.env.DATABASE_URL!,
+  },
+
+  // Supabase
+  supabase: {
+    url: process.env.SUPABASE_URL!,
+    serviceRoleKey: process.env.SUPABASE_SERVICE_ROLE_KEY!,
+  },
+
+  // JWT
+  jwt: {
+    accessSecret: process.env.JWT_ACCESS_SECRET!,
+    refreshSecret: process.env.JWT_REFRESH_SECRET!,
+    accessExpiry: process.env.JWT_ACCESS_EXPIRY || '15m',
+    refreshExpiry: process.env.JWT_REFRESH_EXPIRY || '7d',
+  },
+
+  // Redis
+  redis: {
+    url: process.env.REDIS_URL || '',
+  },
+
+  // Payment
+  payment: {
+    provider: (process.env.PAYMENT_PROVIDER || 'paystack') as 'paystack' | 'wallx',
+  },
+
+  // Paystack
+  paystack: {
+    secretKey: process.env.PAYSTACK_SECRET_KEY || '',
+    publicKey: process.env.PAYSTACK_PUBLIC_KEY || '',
+    webhookSecret: process.env.PAYSTACK_WEBHOOK_SECRET || '',
+  },
+
+  // DigitalOcean Spaces
+  spaces: {
+    endpoint: process.env.DO_SPACES_ENDPOINT || '',
+    region: process.env.DO_SPACES_REGION || 'nyc3',
+    bucket: process.env.DO_SPACES_BUCKET || '',
+    accessKey: process.env.DO_SPACES_ACCESS_KEY || '',
+    secretKey: process.env.DO_SPACES_SECRET_KEY || '',
+    cdnEndpoint: process.env.DO_SPACES_CDN_ENDPOINT || '',
+  },
+
+  // Email
+  email: {
+    apiKey: process.env.RESEND_API_KEY || '',
+    from: process.env.EMAIL_FROM || 'PayMyTax <noreply@paymytax.ng>',
+  },
+
+  // SMS
+  sms: {
+    apiKey: process.env.TERMII_API_KEY || '',
+    senderId: process.env.TERMII_SENDER_ID || 'PayMyTax',
+  },
+
+  // Monitoring
+  monitoring: {
+    sentryDsn: process.env.SENTRY_DSN || '',
+    logLevel: process.env.LOG_LEVEL || 'info',
+  },
+
+  // CORS
+  cors: {
+    frontendUrl: process.env.FRONTEND_URL || 'http://localhost:5173',
+  },
+
+  // App URLs — used in outbound links (WhatsApp messages, emails) where the
+  // customer (not the SME) is the recipient. Distinct from `cors.frontendUrl`
+  // because the SME-facing app and the public-PDF host might diverge in prod
+  // (e.g. app.paymytax.com vs api.paymytax.com). Defaults assume single-host
+  // dev where the frontend proxies /api to the backend.
+  publicUrls: {
+    // Base for /api/v1/public/* links (customer hits this directly, no proxy).
+    apiBase:
+      process.env.PUBLIC_API_URL ||
+      process.env.FRONTEND_URL ||
+      'http://localhost:5173',
+  },
+
+  // Tax
+  tax: {
+    defaultRate: parseFloat(process.env.TAX_DEFAULT_RATE || '7.5'),
+    minRate: parseFloat(process.env.TAX_MIN_RATE || '0'),
+    maxRate: parseFloat(process.env.TAX_MAX_RATE || '50'),
+    currency: process.env.TAX_CURRENCY || 'NGN',
+    taxAuthority: process.env.TAX_AUTHORITY || 'FIRS',
+  },
+
+  // Rate Limiting
+  rateLimit: {
+    windowMs: parseInt(process.env.RATE_LIMIT_WINDOW_MS || '900000', 10),
+    maxRequests: parseInt(process.env.RATE_LIMIT_MAX_REQUESTS || '100', 10),
+  },
+
+  // Scheduled Jobs (node-cron)
+  // Auto-enabled in production; opt-in for dev so `tsx watch` doesn't
+  // re-register the schedule on every file save.
+  cron: {
+    enabled:
+      process.env.ENABLE_CRON === 'true' ||
+      process.env.NODE_ENV === 'production',
+  },
+} as const;
+
+export default config;

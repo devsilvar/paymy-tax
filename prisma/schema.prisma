@@ -1,0 +1,434 @@
+// =================================
+// PRISMA SCHEMA - PayMyTax by WallX
+// =================================
+// 
+// This schema defines the complete database structure for the SME tax
+// calculation and remittance platform.
+//
+// Database: PostgreSQL 16+ (Neon)
+// ORM: Prisma
+// 
+// @author WallX Engineering Team
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider  = "postgresql"
+  url       = env("DATABASE_URL")
+  directUrl = env("DIRECT_URL")
+}
+
+// =================================
+// ENUMS
+// =================================
+
+enum UserRole {
+  user
+  admin
+}
+
+enum PaymentMethod {
+  wallet
+  bank_transfer
+  card
+  paycode
+  ussd
+}
+
+enum PaymentStatus {
+  pending
+  processing
+  completed
+  failed
+  refunded
+}
+
+enum SalesSource {
+  bank_transfer
+  paycode
+  pos
+  online_store
+  manual
+}
+
+enum TransactionStatus {
+  confirmed
+  pending
+  reversed
+  disputed
+}
+
+enum ExpenseCategory {
+  rent
+  inventory
+  salary
+  utility
+  fuel
+  logistics
+  marketing
+  other
+}
+
+enum InvoiceStatus {
+  draft
+  sent
+  paid
+  overdue
+  cancelled
+}
+
+/// How a customer paid an invoice. Captured at mark-paid time, not at create.
+/// Distinct from `PaymentMethod` (which models tax remittance via Paystack) —
+/// invoice collections happen across far more channels (cash, POS terminals,
+/// cheques, mobile money) than the gateway-bound tax flow.
+enum InvoicePaymentMethod {
+  cash
+  bank_transfer
+  pos
+  card
+  mobile_money
+  cheque
+  online
+  other
+}
+
+// =================================
+// MODELS
+// =================================
+
+/// User accounts - business owners and administrators
+model User {
+  id                  String    @id @default(uuid())
+  email               String    @unique
+  passwordHash        String    @map("password_hash")
+  phone               String?   @unique
+  role                UserRole  @default(user)
+  isVerified          Boolean   @default(false) @map("is_verified")
+  isActive            Boolean   @default(true) @map("is_active")
+  resetTokenHash      String?   @map("reset_token_hash")
+  resetTokenExpiresAt DateTime? @map("reset_token_expires_at")
+  lastLoginAt         DateTime? @map("last_login_at")
+  createdAt           DateTime  @default(now()) @map("created_at")
+  updatedAt           DateTime  @updatedAt @map("updated_at")
+
+  // Relations
+  businesses Business[]
+  auditLogs  AuditLog[]
+
+  @@index([email])
+  @@index([phone])
+  @@map("users")
+}
+
+/// Business profiles - each user can have multiple businesses
+model Business {
+  id                   String   @id @default(uuid())
+  merchantId           String   @unique @map("merchant_id")
+  userId               String   @map("user_id")
+  businessName         String   @map("business_name")
+  ownerName            String   @map("owner_name")
+  taxId                String?  @unique @map("tax_id") // TIN from FIRS
+  businessType         String?  @map("business_type")
+  address              String?
+  city                 String?
+  state                String?
+  paystackCustomerCode String?  @map("paystack_customer_code")
+  virtualAccountNumber String?  @map("virtual_account_number")
+  virtualAccountBank   String?  @map("virtual_account_bank")
+  defaultProfitMargin  Decimal  @default(20.00) @map("default_profit_margin") @db.Decimal(5, 2)
+  taxReminderDay       Int      @default(25) @map("tax_reminder_day")
+  createdAt            DateTime @default(now()) @map("created_at")
+  updatedAt            DateTime @updatedAt @map("updated_at")
+
+  // Relations
+  user       User               @relation(fields: [userId], references: [id], onDelete: Cascade)
+  sales      SalesTransaction[]
+  expenses   Expense[]
+  taxReports MonthlyTaxReport[]
+  payments   TaxPayment[]
+  statements TaxStatement[]
+  reminders  Reminder[]
+  auditLogs  AuditLog[]
+  customers  Customer[]
+  invoices   Invoice[]
+
+  @@index([userId])
+  @@index([taxId])
+  @@map("businesses")
+}
+
+/// Sales transactions - all revenue entries
+model SalesTransaction {
+  id              String            @id @default(uuid())
+  businessId      String            @map("business_id")
+  amount          Decimal           @db.Decimal(15, 2)
+  source          SalesSource
+  status          TransactionStatus @default(confirmed)
+  referenceId     String?           @map("reference_id")
+  description     String?
+  customerName    String?           @map("customer_name")
+  transactionDate DateTime          @map("transaction_date") @db.Date
+  createdAt       DateTime          @default(now()) @map("created_at")
+  updatedAt       DateTime          @updatedAt @map("updated_at")
+  createdBy       String?           @map("created_by")
+  metadata        Json?
+
+  // Relations
+  business Business @relation(fields: [businessId], references: [id], onDelete: Cascade)
+  invoice  Invoice?
+
+  @@unique([businessId, source, referenceId], name: "unique_sales_reference")
+  @@index([businessId, transactionDate(sort: Desc)])
+  @@index([referenceId])
+  @@index([source])
+  @@map("sales_transactions")
+}
+
+/// Expenses - business expenditure tracking
+model Expense {
+  id          String          @id @default(uuid())
+  businessId  String          @map("business_id")
+  category    ExpenseCategory
+  description String
+  amount      Decimal         @db.Decimal(15, 2)
+  expenseDate DateTime        @map("expense_date") @db.Date
+  receiptUrl  String?         @map("receipt_url")
+  createdAt   DateTime        @default(now()) @map("created_at")
+  updatedAt   DateTime        @updatedAt @map("updated_at")
+  createdBy   String?         @map("created_by")
+
+  // Relations
+  business Business @relation(fields: [businessId], references: [id], onDelete: Cascade)
+
+  @@index([businessId, expenseDate(sort: Desc)])
+  @@index([category])
+  @@map("expenses")
+}
+
+/// Monthly tax reports - calculated tax obligations
+model MonthlyTaxReport {
+  id            String        @id @default(uuid())
+  businessId    String        @map("business_id")
+  taxMonth      DateTime      @map("tax_month") @db.Date
+  totalSales    Decimal       @default(0) @map("total_sales") @db.Decimal(15, 2)
+  totalExpenses Decimal       @default(0) @map("total_expenses") @db.Decimal(15, 2)
+  grossProfit   Decimal       @default(0) @map("gross_profit") @db.Decimal(15, 2)
+  taxRate       Decimal       @default(7.5) @map("tax_rate") @db.Decimal(5, 2)
+  taxPayable    Decimal       @default(0) @map("tax_payable") @db.Decimal(15, 2)
+  profitMargin  Decimal?      @map("profit_margin") @db.Decimal(5, 2)
+  paymentStatus PaymentStatus @default(pending) @map("payment_status")
+  isFinalized   Boolean       @default(false) @map("is_finalized")
+  isLocked      Boolean       @default(false) @map("is_locked")
+  lockedAt      DateTime?     @map("locked_at")
+  createdAt     DateTime      @default(now()) @map("created_at")
+  updatedAt     DateTime      @updatedAt @map("updated_at")
+
+  // Relations
+  business  Business      @relation(fields: [businessId], references: [id], onDelete: Cascade)
+  payments  TaxPayment[]
+  statement TaxStatement?
+
+  @@unique([businessId, taxMonth])
+  @@index([businessId, taxMonth(sort: Desc)])
+  @@index([paymentStatus])
+  @@map("monthly_tax_reports")
+}
+
+/// Tax payments - payment transactions to FIRS
+model TaxPayment {
+  id                   String        @id @default(uuid())
+  businessId           String        @map("business_id")
+  taxReportId          String        @map("tax_report_id")
+  amountPaid           Decimal       @map("amount_paid") @db.Decimal(15, 2)
+  paymentMethod        PaymentMethod @map("payment_method")
+  transactionReference String        @unique @map("transaction_reference")
+  gatewayResponse      Json?         @map("gateway_response")
+  paymentStatus        PaymentStatus @default(pending) @map("payment_status")
+  paymentDate          DateTime?     @map("payment_date")
+  firsRemittanceRef    String?       @map("firs_remittance_ref")
+  firsReceiptUrl       String?       @map("firs_receipt_url")
+  createdAt            DateTime      @default(now()) @map("created_at")
+  updatedAt            DateTime      @updatedAt @map("updated_at")
+
+  // Relations
+  business  Business         @relation(fields: [businessId], references: [id], onDelete: Cascade)
+  taxReport MonthlyTaxReport @relation(fields: [taxReportId], references: [id], onDelete: Cascade)
+
+  @@index([businessId])
+  @@index([transactionReference])
+  @@index([paymentStatus])
+  @@map("tax_payments")
+}
+
+/// Tax statements - generated PDF documents
+model TaxStatement {
+  id           String    @id @default(uuid())
+  businessId   String    @map("business_id")
+  taxReportId  String    @unique @map("tax_report_id")
+  pdfUrl       String    @map("pdf_url")
+  pdfSizeBytes Int?      @map("pdf_size_bytes")
+  generatedAt  DateTime  @default(now()) @map("generated_at")
+  expiresAt    DateTime? @map("expires_at")
+
+  // Relations
+  business  Business         @relation(fields: [businessId], references: [id], onDelete: Cascade)
+  taxReport MonthlyTaxReport @relation(fields: [taxReportId], references: [id], onDelete: Cascade)
+
+  @@index([businessId])
+  @@map("tax_statements")
+}
+
+/// Audit logs - immutable security and compliance trail
+model AuditLog {
+  id           String   @id @default(uuid())
+  userId       String?  @map("user_id")
+  businessId   String?  @map("business_id")
+  action       String
+  resourceType String?  @map("resource_type")
+  resourceId   String?  @map("resource_id")
+  oldData      Json?    @map("old_data")
+  newData      Json?    @map("new_data")
+  ipAddress    String?  @map("ip_address")
+  userAgent    String?  @map("user_agent")
+  createdAt    DateTime @default(now()) @map("created_at")
+
+  // Relations
+  user     User?     @relation(fields: [userId], references: [id])
+  business Business? @relation(fields: [businessId], references: [id])
+
+  @@index([userId, createdAt(sort: Desc)])
+  @@index([businessId, createdAt(sort: Desc)])
+  @@index([action])
+  @@map("audit_logs")
+}
+
+/// Customers - client master data per business, reused across invoices
+model Customer {
+  id         String   @id @default(uuid())
+  businessId String   @map("business_id")
+  name       String
+  email      String?
+  phone      String?
+  address    String?
+  city       String?
+  state      String?
+  taxId      String?  @map("tax_id") // Customer's TIN, optional
+  notes      String?
+  isActive   Boolean  @default(true) @map("is_active")
+  createdAt  DateTime @default(now()) @map("created_at")
+  updatedAt  DateTime @updatedAt @map("updated_at")
+
+  // Relations
+  business Business  @relation(fields: [businessId], references: [id], onDelete: Cascade)
+  invoices Invoice[]
+
+  @@index([businessId, name])
+  @@index([businessId, isActive])
+  @@map("customers")
+}
+
+/// Invoices - pre-sale billing documents sent to customers
+/// Lifecycle: draft -> sent -> paid (auto-creates SalesTransaction) | cancelled | overdue
+model Invoice {
+  id            String        @id @default(uuid())
+  businessId    String        @map("business_id")
+  customerId    String?       @map("customer_id")
+  invoiceNumber String        @map("invoice_number") // Format: INV-{YYYY}-{NNN}, unique per business
+  status        InvoiceStatus @default(draft)
+  issueDate     DateTime      @map("issue_date") @db.Date
+  dueDate       DateTime      @map("due_date") @db.Date
+  sentAt        DateTime?     @map("sent_at")
+  paidAt        DateTime?     @map("paid_at")
+  /// Channel through which the customer settled — captured at mark-paid time.
+  /// Null for non-paid invoices.
+  paymentMethod InvoicePaymentMethod? @map("payment_method")
+
+  // Customer snapshot — preserved even if customer record is edited/deleted later
+  customerName    String  @map("customer_name")
+  customerEmail   String? @map("customer_email")
+  customerPhone   String? @map("customer_phone")
+  customerAddress String? @map("customer_address")
+  customerTaxId   String? @map("customer_tax_id")
+
+  // Money — VAT exclusive, shown separately per FIRS standard
+  subtotal  Decimal @default(0) @db.Decimal(15, 2)
+  vatRate   Decimal @default(7.5) @map("vat_rate") @db.Decimal(5, 2)
+  vatAmount Decimal @default(0) @map("vat_amount") @db.Decimal(15, 2)
+  discount  Decimal @default(0) @db.Decimal(15, 2)
+  total     Decimal @default(0) @db.Decimal(15, 2)
+  currency  String  @default("NGN")
+
+  // Optional metadata
+  notes        String?
+  paymentTerms String? @map("payment_terms")
+  pdfUrl       String? @map("pdf_url") // populated when PDF is persisted
+
+  // Linkage — when marked paid, a SalesTransaction is auto-created and linked here
+  linkedSaleId String? @unique @map("linked_sale_id")
+
+  // Public share token — opaque random string used in /api/v1/public/invoices/:token/pdf.
+  // Lazily issued the first time the SME triggers a WhatsApp/share send. Letting this
+  // sit nullable until needed keeps the surface area small for invoices that are never
+  // shared electronically (printed, hand-delivered, etc.).
+  shareToken String? @unique @map("share_token")
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+  createdBy String?  @map("created_by")
+
+  // Relations
+  business   Business          @relation(fields: [businessId], references: [id], onDelete: Cascade)
+  customer   Customer?         @relation(fields: [customerId], references: [id], onDelete: SetNull)
+  lines      InvoiceLine[]
+  linkedSale SalesTransaction? @relation(fields: [linkedSaleId], references: [id], onDelete: SetNull)
+
+  @@unique([businessId, invoiceNumber])
+  @@index([businessId, issueDate(sort: Desc)])
+  @@index([businessId, createdAt(sort: Desc)]) // backs generateInvoiceNumber lookup
+  @@index([businessId, status])
+  @@index([customerId])
+  @@index([dueDate])
+  @@map("invoices")
+}
+
+/// Invoice line items - itemized billing rows on an invoice
+model InvoiceLine {
+  id          String   @id @default(uuid())
+  invoiceId   String   @map("invoice_id")
+  description String
+  quantity    Decimal  @default(1) @db.Decimal(12, 2)
+  unitPrice   Decimal  @map("unit_price") @db.Decimal(15, 2)
+  lineTotal   Decimal  @map("line_total") @db.Decimal(15, 2)
+  sortOrder   Int      @default(0) @map("sort_order")
+  createdAt   DateTime @default(now()) @map("created_at")
+
+  // Relations
+  invoice Invoice @relation(fields: [invoiceId], references: [id], onDelete: Cascade)
+
+  @@index([invoiceId, sortOrder])
+  @@map("invoice_lines")
+}
+
+/// Reminders - scheduled notifications for tax deadlines
+model Reminder {
+  id            String    @id @default(uuid())
+  businessId    String    @map("business_id")
+  reminderType  String    @map("reminder_type")
+  scheduledDate DateTime  @map("scheduled_date") @db.Date
+  isSent        Boolean   @default(false) @map("is_sent")
+  sentAt        DateTime? @map("sent_at")
+  message       String?
+  referenceType String?   @map("reference_type")
+  referenceId   String?   @map("reference_id")
+  createdAt     DateTime  @default(now()) @map("created_at")
+
+  // Relations
+  business Business @relation(fields: [businessId], references: [id], onDelete: Cascade)
+
+  @@index([scheduledDate, isSent])
+  @@index([businessId])
+  @@index([businessId, referenceType, referenceId])
+  @@map("reminders")
+}
