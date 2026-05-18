@@ -3,7 +3,18 @@
   "compilerOptions": {
     "noUnusedLocals": false,
     "noUnusedParameters": false,
-    "types": ["jest"]
+    "types": [
+      "jest"
+    ],
+    "rootDir": ".",
   },
-  "include": ["src/**/*", "tests/**/*"]
+  "include": [
+    "src/**/*",
+    "tests/**/*"
+  ],
+  "globals": {
+    "ts-jest": {
+      "tsconfig": "tsconfig.test.json" // ← use the test-specific config
+    }
+  }
 }
