@@ -25,7 +25,7 @@ async function firePaymentSuccessReminder(payment: {
     if (!report) return;
 
     const monthLabel = formatTaxMonth(report.taxMonth);
-    const amountLabel = formatNaira(payment.amount as never);
+    const amountLabel = formatNaira(payment.amountPaid as never);
 
     await createReminderOnce({
       businessId: payment.businessId,
@@ -231,7 +231,7 @@ export async function processWebhook(signature: string, rawBody: string) {
       id: payment.id,
       businessId: payment.businessId,
       taxReportId: payment.taxReportId,
-      amount: payment.amount,
+      amount: payment.amountPaid,
     });
   }
 }
