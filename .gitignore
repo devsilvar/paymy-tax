@@ -1,15 +1,19 @@
 # Dependencies
 node_modules/
-package-lock.json
 
-# Environment variables
+# Environment variables — never commit secrets
 .env
 .env.local
+.env.*.local
+.env.development
 .env.production
+.env.test
+!.env.example
 
 # Build output
 dist/
 build/
+*.tsbuildinfo
 
 # Logs
 logs/
@@ -41,17 +45,14 @@ tmp/
 temp/
 *.tmp
 
-# Documentation & notes
-*.md
-*.txt
-
 # Executables
 *.exe
 *.dll
 *.so
 *.dylib
 
-# Database seed files
-prisma/seed.ts
-prisma/seed.js
-prisma/seed
+# =================================
+# NOTE: package-lock.json IS tracked.
+# `npm ci` on Render/CI requires it. Do not add it back to this ignore list.
+# Same for prisma/seed.ts and *.md — they belong in source control.
+# =================================
