@@ -19,7 +19,10 @@ services:
     region: frankfurt        # closest Render region to Nigeria; change if you prefer
     rootDir: backend         # this blueprint targets the backend folder of the monorepo
     branch: main
-    buildCommand: npm ci && npm run build
+    # NODE_ENV=production causes npm to skip devDependencies, but we need
+    # @types/* and tsc itself (devDeps) to compile. --include=dev forces them
+    # in for the build step only; runtime still uses production deps from dist/.
+    buildCommand: npm ci --include=dev && npm run build
     startCommand: npm start  # runs `prisma migrate deploy && node dist/server.js`
     healthCheckPath: /api/health
     autoDeploy: true
