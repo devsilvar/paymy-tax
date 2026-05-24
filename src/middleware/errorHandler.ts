@@ -1,9 +1,9 @@
 /**
  * Global Error Handler Middleware
- * 
+ *
  * Centralized error handling for all routes.
  * Catches errors, logs them, and sends appropriate responses to clients.
- * 
+ *
  * @author WallX Engineering Team
  */
 
@@ -101,7 +101,7 @@ export const errorHandler = (
   } else if (err instanceof Prisma.PrismaClientKnownRequestError) {
     // Database errors from Prisma
     statusCode = 400;
-    
+
     switch (err.code) {
       case 'P2002':
         errorCode = 'DUPLICATE_ENTRY';

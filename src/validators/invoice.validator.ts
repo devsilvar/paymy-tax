@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { asNumber, asStringOptional } from './query.utils';
 
 const invoiceLineSchema = z.object({
   description: z.string().min(1, 'Line description is required').max(500).trim(),
@@ -81,10 +82,10 @@ export const cancelInvoiceSchema = z.object({
 });
 
 export const invoicesQuerySchema = z.object({
-  page: z.coerce.number().int().min(1).default(1),
-  limit: z.coerce.number().int().min(1).max(100).default(20),
+  page: asNumber({ min: 1, int: true }).default(1),
+  limit: asNumber({ min: 1, max: 100, int: true }).default(20),
   status: z.enum(['draft', 'sent', 'paid', 'overdue', 'cancelled']).optional(),
-  search: z.string().trim().optional(),
+  search: asStringOptional,
   startDate: z.coerce.date().optional(),
   endDate: z.coerce.date().optional(),
 });

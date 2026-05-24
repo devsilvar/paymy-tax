@@ -15,7 +15,7 @@ async function firePaymentSuccessReminder(payment: {
   id: string;
   businessId: string;
   taxReportId: string;
-  amount: unknown;
+  amountPaid: number | string;
 }) {
   try {
     const report = await prisma.monthlyTaxReport.findUnique({
@@ -25,7 +25,7 @@ async function firePaymentSuccessReminder(payment: {
     if (!report) return;
 
     const monthLabel = formatTaxMonth(report.taxMonth);
-    const amountLabel = formatNaira(payment.amountPaid as never);
+    const amountLabel = formatNaira(payment.amountPaid);
 
     await createReminderOnce({
       businessId: payment.businessId,
@@ -231,7 +231,7 @@ export async function processWebhook(signature: string, rawBody: string) {
       id: payment.id,
       businessId: payment.businessId,
       taxReportId: payment.taxReportId,
-      amount: payment.amountPaid,
+      amountPaid: Number(payment.amountPaid),
     });
   }
 }
@@ -293,7 +293,7 @@ export async function verifyPayment(userId: string, businessId: string, paymentI
       id: updated.id,
       businessId: updated.businessId,
       taxReportId: updated.taxReportId,
-      amount: updated.amount,
+      amountPaid: Number(updated.amountPaid),
     });
 
     return updated;

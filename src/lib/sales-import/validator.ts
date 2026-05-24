@@ -282,7 +282,7 @@ export function validateRow(raw: RawRow): RowValidationResult {
   }
 
   const amountResult = normalizeAmount(raw.amount);
-  if (!amountResult.ok) {
+  if (amountResult.ok === false) {
     errors.push({ field: 'amount', message: amountResult.message });
   }
 

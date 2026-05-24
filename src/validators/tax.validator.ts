@@ -1,5 +1,36 @@
 import { z } from 'zod';
 
+// Transform query params from string | string[] to single values
+const queryNumber = (opts?: { min?: number; max?: number; int?: boolean }) =>
+  z.preprocess(
+    (val) => {
+      if (val === undefined) return undefined;
+      if (Array.isArray(val)) return val[0];
+      return val;
+    },
+    opts?.int
+      ? z.coerce.number().int().min(opts.min ?? 0).max(opts.max ?? Number.MAX_SAFE_INTEGER)
+      : z.coerce.number().min(opts?.min ?? 0).max(opts?.max ?? Number.MAX_SAFE_INTEGER)
+  );
+
+const queryString = z.preprocess(
+  (val) => {
+    if (val === undefined) return undefined;
+    if (Array.isArray(val)) return val[0];
+    return val;
+  },
+  z.string()
+);
+
+const queryOptionalString = z.preprocess(
+  (val) => {
+    if (val === undefined) return undefined;
+    if (Array.isArray(val)) return val[0];
+    return val;
+  },
+  z.string().optional()
+);
+
 export const calculateTaxSchema = z.object({
   month: z.coerce.number().int().min(1).max(12),
   year: z.coerce.number().int().min(2020).max(2100),
@@ -7,25 +38,23 @@ export const calculateTaxSchema = z.object({
 });
 
 export const taxReportsQuerySchema = z.object({
-  page: z.coerce.number().int().min(1).default(1),
-  limit: z.coerce.number().int().min(1).max(100).default(12),
-  year: z.coerce.number().int().min(2020).max(2100).optional(),
+  page: queryNumber({ min: 1 }).default(1),
+  limit: queryNumber({ min: 1, max: 100 }).default(12),
+  year: queryNumber({ min: 2020, max: 2100 }).optional(),
   status: z.enum(['pending', 'processing', 'completed', 'failed', 'refunded']).optional(),
 });
 
 export const dashboardQuerySchema = z.object({
-  months: z.coerce.number().int().min(1).max(24).default(6),
+  months: queryNumber({ min: 1, max: 24 }).default(6),
 });
 
 // ISO month `YYYY-MM`. We intentionally don't coerce through `Date` at the
 // edge — downstream code builds the window explicitly to avoid TZ drift.
-const isoMonth = z
-  .string()
-  .regex(/^\d{4}-(0[1-9]|1[0-2])$/, 'must be ISO month YYYY-MM');
+const isoMonth = z.string().regex(/^\d{4}-(0[1-9]|1[0-2])$/, 'must be ISO month YYYY-MM');
 
 export const taxAnalyticsQuerySchema = z.object({
-  from: isoMonth.optional(),
-  to: isoMonth.optional(),
+  from: queryString.optional(),
+  to: queryString.optional(),
   range: z.enum(['6m', '12m', '24m', 'all', 'custom']).optional(),
 });
 

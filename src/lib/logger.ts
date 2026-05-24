@@ -33,8 +33,17 @@ const prodFormat = winston.format.combine(
 );
 
 /**
- * Create Winston logger instance
+ * File transports are OFF by default in production.
+ *
+ * Render / Heroku / Fly / most container hosts have ephemeral or read-only
+ * filesystems — writes to ./logs are either lost on restart or fail outright.
+ * The platform captures stdout/stderr (which the Console transport feeds),
+ * so files are redundant. Opt back in only when running on a VM/bare-metal
+ * host with persistent disk by setting `ENABLE_FILE_LOGS=true`.
  */
+const fileLogsEnabled =
+  process.env.ENABLE_FILE_LOGS === 'true' && config.app.isProduction;
+
 const logger = winston.createLogger({
   level: config.monitoring.logLevel,
   format: config.app.isProduction ? prodFormat : devFormat,
@@ -43,13 +52,13 @@ const logger = winston.createLogger({
     environment: config.app.env,
   },
   transports: [
-    // Console transport
+    // Console transport — primary in all environments. Render captures this.
     new winston.transports.Console({
       stderrLevels: ['error'],
     }),
 
-    // File transports (production only)
-    ...(config.app.isProduction
+    // File transports (opt-in only — see comment above)
+    ...(fileLogsEnabled
       ? [
           new winston.transports.File({
             filename: 'logs/error.log',

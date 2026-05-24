@@ -13,15 +13,17 @@ import dotenv from 'dotenv';
 dotenv.config();
 
 /**
- * Validates that required environment variables are present
+ * Validates that required environment variables are present.
+ *
+ * SUPABASE_* are NOT in the required set — the app uses Prisma + Postgres
+ * for all DB access; Supabase is only needed if you opt into Supabase
+ * Storage / Auth helpers (currently unused in this codebase).
  */
 function validateConfig() {
   const required = [
     'DATABASE_URL',
     'JWT_ACCESS_SECRET',
     'JWT_REFRESH_SECRET',
-    'SUPABASE_URL',
-    'SUPABASE_SERVICE_ROLE_KEY',
   ];
 
   const missing = required.filter((key) => !process.env[key]);
@@ -55,10 +57,10 @@ export const config = {
     url: process.env.DATABASE_URL!,
   },
 
-  // Supabase
+  // Supabase (optional — only set if you use Supabase Storage / Auth helpers)
   supabase: {
-    url: process.env.SUPABASE_URL!,
-    serviceRoleKey: process.env.SUPABASE_SERVICE_ROLE_KEY!,
+    url: process.env.SUPABASE_URL || '',
+    serviceRoleKey: process.env.SUPABASE_SERVICE_ROLE_KEY || '',
   },
 
   // JWT

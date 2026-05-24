@@ -1,6 +1,6 @@
 /**
  * Shared TypeScript Type Definitions
- * 
+ *
  * @author WallX Engineering Team
  */
 
@@ -18,10 +18,18 @@ export interface JWTPayload {
 }
 
 /**
- * Extended Express Request with authenticated user
+ * Params type with string values (not string | string[])
+ */
+export interface AppParams {
+  [key: string]: string;
+}
+
+/**
+ * Extended Express Request with authenticated user and properly typed params
  */
 export interface AuthenticatedRequest extends Request {
   user?: JWTPayload;
+  params: AppParams;
 }
 
 /**

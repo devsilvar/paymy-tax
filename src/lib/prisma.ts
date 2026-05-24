@@ -44,7 +44,11 @@ if (process.env.NODE_ENV !== 'production') {
   globalThis.prismaGlobal = prisma;
 }
 
-// Only attempt connection if not in test mode
+// Only attempt connection if not in test mode.
+// Note: we do NOT exit on failure — Render restarts crashed containers, but
+// transient DB hiccups during cold-start should be retried by Prisma at the
+// first query, not turn into a restart loop. The /api/health endpoint and
+// the platform's health check will surface persistent outages.
 if (process.env.NODE_ENV !== 'test') {
   prisma.$connect()
     .then(() => {
@@ -52,10 +56,8 @@ if (process.env.NODE_ENV !== 'test') {
     })
     .catch((error) => {
       logger.error('❌ Database connection failed', { error: error.message });
-      logger.warn('⚠️  Set up your database and update DATABASE_URL in .env');
-      // Don't exit in development to allow testing without DB
-      if (process.env.NODE_ENV === 'production') {
-        process.exit(1);
+      if (process.env.NODE_ENV !== 'production') {
+        logger.warn('⚠️  Set up your database and update DATABASE_URL in .env');
       }
     });
 }

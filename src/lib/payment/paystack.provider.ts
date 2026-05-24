@@ -14,6 +14,15 @@ import {
 
 const BASE_URL = 'https://api.paystack.co';
 
+interface PaystackResponse<T> {
+  status: boolean;
+  message: string;
+  data: T;
+  meta?: { nextStep?: string };
+  code?: string;
+  type?: string;
+}
+
 export class PaystackProvider implements PaymentProvider {
   private secretKey: string;
 
@@ -37,20 +46,20 @@ export class PaystackProvider implements PaymentProvider {
       ...(body ? { body: JSON.stringify(body) } : {}),
     });
 
-    const data = await response.json();
+    const responseData = await response.json() as PaystackResponse<T>;
 
-    if (!data.status) {
-      const message = data.message || 'Paystack request failed';
-      const meta = data.meta?.nextStep ? ` ${data.meta.nextStep}` : '';
+    if (!responseData.status) {
+      const message = responseData.message || 'Paystack request failed';
+      const meta = responseData.meta?.nextStep ? ` ${responseData.meta.nextStep}` : '';
       throw new AppError(
         response.status >= 400 && response.status < 500 ? 400 : 502,
         `${message}${meta}`,
         'PAYSTACK_ERROR',
-        { paystackCode: data.code, type: data.type },
+        { paystackCode: responseData.code, type: responseData.type },
       );
     }
 
-    return data.data;
+    return responseData.data;
   }
 
   async initialize(params: InitializePaymentParams): Promise<InitializePaymentResult> {
@@ -82,7 +91,7 @@ export class PaystackProvider implements PaymentProvider {
     };
   }
 
-  // ─── DVA Methods ──────────────────────────────────────────
+  // ─── DVA Methods ────────────────────────────────────────────────────
 
   async createCustomer(params: CreateCustomerParams): Promise<CreateCustomerResult> {
     const data = await this.request('POST', '/customer', {

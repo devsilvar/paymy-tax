@@ -1,0 +1,104 @@
+# =================================
+# Render Blueprint — PayMyTax API
+# =================================
+# Apply via: Render Dashboard → New → Blueprint → point at this repo,
+# and set the Root Directory to `backend` in the service settings.
+#
+# Docs: https://render.com/docs/blueprint-spec
+#
+# Note on secrets: every `sync: false` value below means Render will
+# NOT auto-fill it — you must paste the real value in the dashboard
+# after the first deploy. This is intentional: secrets must never live
+# in source control.
+
+services:
+  - type: web
+    name: paymytax-api
+    runtime: node
+    plan: starter            # change to `free` for evaluation; `starter` keeps the service warm
+    region: frankfurt        # closest Render region to Nigeria; change if you prefer
+    rootDir: backend         # this blueprint targets the backend folder of the monorepo
+    branch: main
+    buildCommand: npm ci && npm run build
+    startCommand: npm start  # runs `prisma migrate deploy && node dist/server.js`
+    healthCheckPath: /api/health
+    autoDeploy: true
+
+    envVars:
+      # ---- App ----
+      - key: NODE_ENV
+        value: production
+      - key: API_VERSION
+        value: v1
+      - key: LOG_LEVEL
+        value: info
+      - key: ENABLE_CRON
+        value: "true"
+
+      # ---- Database (Neon / Supabase / Render Postgres) ----
+      # Set this in the dashboard. Must include ?sslmode=require for Neon.
+      - key: DATABASE_URL
+        sync: false
+
+      # ---- JWT secrets ----
+      # Generate with: openssl rand -base64 64
+      - key: JWT_ACCESS_SECRET
+        generateValue: true
+      - key: JWT_REFRESH_SECRET
+        generateValue: true
+      - key: JWT_ACCESS_EXPIRY
+        value: 15m
+      - key: JWT_REFRESH_EXPIRY
+        value: 7d
+
+      # ---- CORS ----
+      # Comma-separated list of allowed frontend origins.
+      # e.g. https://app.paymytax.ng,https://www.paymytax.ng
+      - key: FRONTEND_URL
+        sync: false
+      - key: PUBLIC_API_URL
+        sync: false
+
+      # ---- Paystack ----
+      - key: PAYSTACK_SECRET_KEY
+        sync: false
+      - key: PAYSTACK_PUBLIC_KEY
+        sync: false
+      - key: PAYSTACK_WEBHOOK_SECRET
+        sync: false
+
+      # ---- Email (Resend) — optional, falls back to logger if unset ----
+      - key: RESEND_API_KEY
+        sync: false
+      - key: EMAIL_FROM
+        value: PayMyTax <noreply@paymytax.ng>
+
+      # ---- SMS (Termii) — optional ----
+      - key: TERMII_API_KEY
+        sync: false
+      - key: TERMII_SENDER_ID
+        value: PayMyTax
+
+      # ---- File storage (DigitalOcean Spaces / S3) — optional ----
+      - key: DO_SPACES_ENDPOINT
+        sync: false
+      - key: DO_SPACES_REGION
+        sync: false
+      - key: DO_SPACES_BUCKET
+        sync: false
+      - key: DO_SPACES_ACCESS_KEY
+        sync: false
+      - key: DO_SPACES_SECRET_KEY
+        sync: false
+      - key: DO_SPACES_CDN_ENDPOINT
+        sync: false
+
+      # ---- Monitoring (Sentry) — optional ----
+      - key: SENTRY_DSN
+        sync: false
+
+      # ---- Rate limiting (defaults are sensible) ----
+      - key: RATE_LIMIT_WINDOW_MS
+        value: "900000"
+      - key: RATE_LIMIT_MAX_REQUESTS
+        value: "100"

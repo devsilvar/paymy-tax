@@ -1,4 +1,4 @@
-import { Request, Response } from 'express';
+import { Response } from 'express';
 import { asyncHandler } from '@/middleware/errorHandler';
 import { AuthenticatedRequest } from '@/types';
 import {
@@ -165,7 +165,7 @@ export const cancel = asyncHandler(async (req: AuthenticatedRequest, res: Respon
 
 // Public PDF — accessed by invoice recipients via the shareToken in their
 // WhatsApp message. No auth header required; the token IS the auth.
-export const downloadPublicPdf = asyncHandler(async (req: Request, res: Response) => {
+export const downloadPublicPdf = asyncHandler(async (req: AuthenticatedRequest, res: Response) => {
   const { buffer, filename } = await invoiceService.getPublicInvoicePdfByToken(
     req.params.token,
   );

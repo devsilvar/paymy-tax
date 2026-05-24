@@ -28,6 +28,15 @@ export const createApp = (): Application => {
   const app = express();
 
   // =================================
+  // TRUST PROXY (must come BEFORE rate limiter so the limiter sees the
+  // real client IP from X-Forwarded-For rather than the proxy's IP.
+  // Render/Heroku/etc. terminate TLS in front of the app.)
+  // =================================
+  if (config.app.isProduction) {
+    app.set('trust proxy', 1);
+  }
+
+  // =================================
   // SECURITY MIDDLEWARE
   // =================================
   app.use(helmetMiddleware);
@@ -54,13 +63,6 @@ export const createApp = (): Application => {
   // =================================
   if (config.app.isProduction) {
     app.use('/api', globalRateLimiter);
-  }
-
-  // =================================
-  // TRUST PROXY (for deployment behind reverse proxy)
-  // =================================
-  if (config.app.isProduction) {
-    app.set('trust proxy', 1);
   }
 
   // =================================

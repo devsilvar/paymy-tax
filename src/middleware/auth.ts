@@ -9,16 +9,16 @@ export const authenticate = (
   _res: Response,
   next: NextFunction
 ): void => {
-  const authHeader = req.headers.authorization;
+  const authHeader = req.headers['authorization'];
 
-  if (!authHeader || !authHeader.startsWith('Bearer ')) {
+  if (!authHeader || typeof authHeader !== 'string' || !authHeader.startsWith('Bearer ')) {
     return next(new AppError(401, 'Authentication required', 'UNAUTHORIZED'));
   }
 
-  const token: any = authHeader.split(' ')[1];
+  const token = authHeader.slice(7);
 
   try {
-    const decoded = jwt.verify(token, config.jwt.accessSecret) as unknown as JWTPayload;
+    const decoded = jwt.verify(token, config.jwt.accessSecret) as JWTPayload;
     req.user = {
       userId: decoded.userId,
       email: decoded.email,

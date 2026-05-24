@@ -24,9 +24,11 @@ export const updateBusinessSchema = z.object({
   taxReminderDay: z.number().int().min(1).max(28).optional(),
 });
 
+import { asNumber } from './query.utils';
+
 export const businessQuerySchema = z.object({
-  page: z.coerce.number().int().min(1).default(1),
-  limit: z.coerce.number().int().min(1).max(100).default(10),
+  page: asNumber({ min: 1, int: true }).default(1),
+  limit: asNumber({ min: 1, max: 100, int: true }).default(10),
 });
 
 export type CreateBusinessInput = z.infer<typeof createBusinessSchema>;

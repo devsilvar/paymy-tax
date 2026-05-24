@@ -1,14 +1,15 @@
 import { z } from 'zod';
+import { asNumber } from './query.utils';
 
 export const reminderQuerySchema = z.object({
-  page: z.coerce.number().int().min(1).default(1),
-  limit: z.coerce.number().int().min(1).max(100).default(20),
+  page: asNumber({ min: 1, int: true }).default(1),
+  limit: asNumber({ min: 1, max: 100, int: true }).default(20),
   status: z.enum(['pending', 'sent', 'all']).default('all'),
 });
 
 export const generateRemindersSchema = z.object({
-  month: z.coerce.number().int().min(1).max(12),
-  year: z.coerce.number().int().min(2020).max(2100),
+  month: asNumber({ min: 1, max: 12, int: true }),
+  year: asNumber({ min: 2020, max: 2100, int: true }),
 });
 
 export const dismissReminderSchema = z.object({

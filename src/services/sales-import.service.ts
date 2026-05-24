@@ -142,7 +142,7 @@ export async function previewImport(
   const invalidRowsOutput: Array<{ rowNumber: number; errors: RowError[] }> = [];
 
   for (const result of validated) {
-    if (!result.ok) {
+    if (result.ok === false) {
       invalidRowsOutput.push({ rowNumber: result.rowNumber, errors: result.errors });
       continue;
     }

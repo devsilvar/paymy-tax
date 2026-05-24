@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { asNumber } from './query.utils';
 
 const EXPENSE_CATEGORIES = [
   'rent', 'inventory', 'salary', 'utility', 'fuel', 'logistics', 'marketing', 'other',
@@ -21,18 +22,18 @@ export const updateExpenseSchema = z.object({
 });
 
 export const expenseQuerySchema = z.object({
-  page: z.coerce.number().int().min(1).default(1),
-  limit: z.coerce.number().int().min(1).max(100).default(20),
+  page: asNumber({ min: 1, int: true }).default(1),
+  limit: asNumber({ min: 1, max: 100, int: true }).default(20),
   category: z.enum(EXPENSE_CATEGORIES).optional(),
   startDate: z.coerce.date().optional(),
   endDate: z.coerce.date().optional(),
-  month: z.coerce.number().int().min(1).max(12).optional(),
-  year: z.coerce.number().int().min(2020).max(2100).optional(),
+  month: asNumber({ min: 1, max: 12, int: true }).optional(),
+  year: asNumber({ min: 2020, max: 2100, int: true }).optional(),
 });
 
 export const expenseSummaryQuerySchema = z.object({
-  month: z.coerce.number().int().min(1).max(12),
-  year: z.coerce.number().int().min(2020).max(2100),
+  month: asNumber({ min: 1, max: 12, int: true }),
+  year: asNumber({ min: 2020, max: 2100, int: true }),
 });
 
 export type CreateExpenseInput = z.infer<typeof createExpenseSchema>;

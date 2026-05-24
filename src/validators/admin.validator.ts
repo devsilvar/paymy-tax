@@ -1,12 +1,13 @@
 import { z } from 'zod';
+import { asNumber, asStringOptional } from './query.utils';
 
 export const paginationSchema = z.object({
-  page: z.coerce.number().int().min(1).default(1),
-  limit: z.coerce.number().int().min(1).max(100).default(20),
+  page: asNumber({ min: 1, int: true }).default(1),
+  limit: asNumber({ min: 1, max: 100, int: true }).default(20),
 });
 
 export const userSearchSchema = paginationSchema.extend({
-  search: z.string().optional(),
+  search: asStringOptional,
 });
 
 export const toggleStatusSchema = z.object({
@@ -15,7 +16,7 @@ export const toggleStatusSchema = z.object({
 
 export const auditLogFilterSchema = paginationSchema.extend({
   userId: z.string().uuid().optional(),
-  action: z.string().optional(),
+  action: asStringOptional,
 });
 
 export type PaginationInput = z.infer<typeof paginationSchema>;
