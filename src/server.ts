@@ -20,8 +20,10 @@ const startServer = async () => {
     // Create Express app
     const app = createApp();
 
-    // Start listening
-    const server = app.listen(config.app.port, () => {
+    // Start listening — bind to 0.0.0.0 explicitly so the platform's
+    // port scanner (Render, Fly, Docker) can reach us. Defaulting to
+    // localhost on some Node configs makes the port invisible externally.
+    const server = app.listen(config.app.port, '0.0.0.0', () => {
       logger.info('=================================');
       logger.info('🚀 PayMyTax API Server Started');
       logger.info('=================================');

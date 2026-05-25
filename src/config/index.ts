@@ -42,11 +42,30 @@ validateConfig();
 /**
  * Application Configuration Object
  */
+/**
+ * Parse PORT defensively. Render/Heroku inject PORT automatically; if a user
+ * also adds it in the dashboard with a bad value (empty string, whitespace,
+ * non-numeric), parseInt returns NaN and app.listen throws ERR_SOCKET_BAD_PORT.
+ * Fall back to 10000 (Render's default) and log loudly so it's findable.
+ */
+const parsePort = (raw: string | undefined): number => {
+  const fallback = 10000;
+  if (!raw || !raw.trim()) return fallback;
+  const n = Number(raw.trim());
+  if (!Number.isInteger(n) || n < 1 || n > 65535) {
+    console.error(
+      `[config] Invalid PORT="${raw}" (must be integer 1-65535). Falling back to ${fallback}.`
+    );
+    return fallback;
+  }
+  return n;
+};
+
 export const config = {
   // Application
   app: {
     env: process.env.NODE_ENV || 'development',
-    port: parseInt(process.env.PORT || '3000', 10),
+    port: parsePort(process.env.PORT),
     apiVersion: process.env.API_VERSION || 'v1',
     isDevelopment: process.env.NODE_ENV === 'development',
     isProduction: process.env.NODE_ENV === 'production',
