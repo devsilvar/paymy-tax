@@ -10,6 +10,7 @@ export const createSaleSchema = z.object({
   customerName: z.string().max(200).trim().optional(),
   transactionDate: z.coerce.date(),
   metadata: z.any().optional(),
+  needsVerification: z.boolean().optional(),
 });
 
 export const updateSaleSchema = z.object({

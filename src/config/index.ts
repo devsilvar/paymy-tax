@@ -101,10 +101,22 @@ export const config = {
   },
 
   // Paystack
+  //
+  // `preferredBank` is the DVA-creation bank slug Paystack expects on
+  // POST /dedicated_account. Test mode REQUIRES `test-bank` — `wema-bank`
+  // returns a 400 with test keys. Live mode accepts `wema-bank` (default),
+  // `titan-paystack`, etc. We auto-pick based on the secret-key prefix so
+  // local dev with test keys just works; explicit env var overrides if you
+  // ever need a different live partner bank.
   paystack: {
     secretKey: process.env.PAYSTACK_SECRET_KEY || '',
     publicKey: process.env.PAYSTACK_PUBLIC_KEY || '',
     webhookSecret: process.env.PAYSTACK_WEBHOOK_SECRET || '',
+    preferredBank:
+      process.env.PAYSTACK_PREFERRED_BANK ||
+      ((process.env.PAYSTACK_SECRET_KEY || '').startsWith('sk_test_')
+        ? 'test-bank'
+        : 'wema-bank'),
   },
 
   // DigitalOcean Spaces
@@ -165,7 +177,7 @@ export const config = {
   // Rate Limiting
   rateLimit: {
     windowMs: parseInt(process.env.RATE_LIMIT_WINDOW_MS || '900000', 10),
-    maxRequests: parseInt(process.env.RATE_LIMIT_MAX_REQUESTS || '100', 10),
+    maxRequests: parseInt(process.env.RATE_LIMIT_MAX_REQUESTS || '10000', 10),
   },
 
   // Scheduled Jobs (node-cron)

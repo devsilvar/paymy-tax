@@ -7,6 +7,7 @@
  * @author WallX Engineering Team
  */
 
+import * as Sentry from '@sentry/node';
 import express, { Application } from 'express';
 import swaggerUi from 'swagger-ui-express';
 import config from '@/config';
@@ -20,6 +21,16 @@ import {
 import { errorHandler, notFoundHandler } from '@/middleware/errorHandler';
 import routes from '@/routes';
 import { swaggerSpec } from '@/config/swagger';
+
+// Initialize Sentry if DSN is configured
+if (config.monitoring.sentryDsn) {
+  Sentry.init({
+    dsn: config.monitoring.sentryDsn,
+    environment: config.app.env,
+    tracesSampleRate: config.app.isProduction ? 0.1 : 1.0,
+  });
+  logger.info('Sentry initialized', { environment: config.app.env });
+}
 
 /**
  * Create and configure Express application
@@ -98,6 +109,10 @@ export const createApp = (): Application => {
   // ERROR HANDLING
   // =================================
   app.use(notFoundHandler);
+  // Sentry error handler (v10+) must be before custom error handler
+  if (config.monitoring.sentryDsn) {
+    Sentry.setupExpressErrorHandler(app);
+  }
   app.use(errorHandler);
 
   logger.info('✅ Express application configured successfully');

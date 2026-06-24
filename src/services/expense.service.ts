@@ -28,7 +28,12 @@ async function assertMonthNotLocked(
   expenseDate: Date,
   db: TxClient | typeof prisma = prisma
 ) {
-  const monthStart = new Date(expenseDate.getFullYear(), expenseDate.getMonth(), 1);
+  // UTC — taxMonth is written in UTC by calculateTax; using local-tz
+  // derivation here would miss the row on UTC+ hosts and silently allow
+  // edits to a locked/finalized month.
+  const monthStart = new Date(
+    Date.UTC(expenseDate.getUTCFullYear(), expenseDate.getUTCMonth(), 1)
+  );
 
   const report = await db.monthlyTaxReport.findUnique({
     where: {
@@ -236,7 +241,9 @@ export async function deleteExpense(
 
   await assertMonthNotLocked(businessId, existing.expenseDate, db);
 
-  await db.expense.delete({ where: { id: expenseId } });
+  await db.expense.delete({
+    where: { id: expenseId },
+  });
 
   logAudit({
     userId,

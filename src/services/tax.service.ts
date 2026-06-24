@@ -41,8 +41,12 @@ export async function calculateTax(
 ) {
   const business = await verifyBusinessOwnership(userId, businessId);
 
-  const monthStart = new Date(year, month - 1, 1);
-  const monthEnd = new Date(year, month, 0);
+  // Build month bounds in UTC. `taxMonth`, `transactionDate`, and `expenseDate`
+  // are all @db.Date — Prisma serialises JS Date as UTC, so a local-time
+  // midnight on a UTC+ host (Lagos = UTC+1) truncates to the previous day in
+  // Postgres. `Date.UTC(...)` pins the calendar date to what the user asked for.
+  const monthStart = new Date(Date.UTC(year, month - 1, 1));
+  const monthEnd = new Date(Date.UTC(year, month, 0));
   const dateFilter = { gte: monthStart, lte: monthEnd };
 
   // Check if already locked (paid) — can't recalculate a paid month
@@ -62,7 +66,7 @@ export async function calculateTax(
   // Aggregate confirmed sales and all expenses for the month
   const [salesAgg, expenseAgg] = await Promise.all([
     prisma.salesTransaction.aggregate({
-      where: { businessId, transactionDate: dateFilter, status: 'confirmed' },
+      where: { businessId, transactionDate: dateFilter, status: 'confirmed', isTaxable: true },
       _sum: { amount: true },
     }),
     prisma.expense.aggregate({
@@ -124,10 +128,14 @@ export async function calculateTax(
   logger.info('Tax calculated', { reportId: report.id, businessId, month, year, taxPayable });
 
   // ─── Margin Warnings (non-blocking) ────────────────────────
+  // `defaultProfitMargin` is a Prisma Decimal — `typeof` is 'object', never
+  // 'number'. Using toNumber() preserves the configured value; falling through
+  // to 20 (the legacy default) only when truly null/undefined.
   const warnings: { type: string; message: string }[] = [];
-  const expectedMargin = typeof business.defaultProfitMargin === 'number'
-    ? business.defaultProfitMargin
-    : 20;
+  const expectedMargin =
+    business.defaultProfitMargin != null
+      ? toNumber(business.defaultProfitMargin)
+      : 20;
   const monthLabel = monthStart.toLocaleDateString('en-NG', { month: 'long', year: 'numeric' });
 
   if (totalExpenses === 0 && totalSales > 0) {
@@ -159,9 +167,10 @@ export async function listReports(
   const where: any = { businessId };
   if (query.status) where.paymentStatus = query.status;
   if (query.year) {
+    // UTC bounds — same reason as in calculateTax: taxMonth is @db.Date.
     where.taxMonth = {
-      gte: new Date(query.year, 0, 1),
-      lte: new Date(query.year, 11, 31),
+      gte: new Date(Date.UTC(query.year, 0, 1)),
+      lte: new Date(Date.UTC(query.year, 11, 31)),
     };
   }
 
@@ -294,7 +303,11 @@ export async function getDashboard(
   await verifyBusinessOwnership(userId, businessId);
 
   const now = new Date();
-  const currentMonthStart = new Date(now.getFullYear(), now.getMonth(), 1);
+  // UTC bounds — must match the UTC-built taxMonth in calculateTax so the
+  // unique-key lookup hits. Local-time midnight on UTC+ would miss January
+  // reports (stored as previous-Dec-31 in UTC) and dashboard would show "no
+  // report for current month" the second the user crosses a month boundary.
+  const currentMonthStart = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1));
 
   // Current month report (may not exist yet)
   const currentReport = await prisma.monthlyTaxReport.findUnique({
@@ -302,7 +315,9 @@ export async function getDashboard(
   });
 
   // Trends: last N months of reports
-  const trendStart = new Date(now.getFullYear(), now.getMonth() - trendMonths + 1, 1);
+  const trendStart = new Date(
+    Date.UTC(now.getUTCFullYear(), now.getUTCMonth() - trendMonths + 1, 1)
+  );
 
   const trends = await prisma.monthlyTaxReport.findMany({
     where: {

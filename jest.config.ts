@@ -13,7 +13,8 @@ const config: Config = {
       diagnostics: false,
     }],
   },
-  testMatch: ['**/*.e2e.test.ts'],
+  testMatch: ['**/*.test.ts'],
+  setupFiles: ['<rootDir>/tests/helpers/loadEnv.ts'],
 };
 
 export default config;

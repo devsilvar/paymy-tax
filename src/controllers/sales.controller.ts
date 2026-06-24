@@ -11,6 +11,12 @@ import * as salesService from '@/services/sales.service';
 
 export const create = asyncHandler(async (req: AuthenticatedRequest, res: Response) => {
   const input = createSaleSchema.parse(req.body);
+  
+  // Admin test payments default to needsVerification: true
+  if (req.user!.role === 'admin' && input.needsVerification === undefined) {
+    input.needsVerification = true;
+  }
+  
   const sale = await salesService.createSale(
     req.user!.userId,
     req.params.businessId,
@@ -93,5 +99,65 @@ export const summary = asyncHandler(async (req: AuthenticatedRequest, res: Respo
   res.status(200).json({
     success: true,
     data: result,
+  });
+});
+
+
+export const getUnverified = asyncHandler(async (req: AuthenticatedRequest, res: Response) => {
+  const query = {
+    page: req.query.page ? parseInt(req.query.page as string) : 1,
+    limit: req.query.limit ? parseInt(req.query.limit as string) : 50,
+  };
+
+  const result = await salesService.getUnverifiedSales(
+    req.user!.userId,
+    req.params.businessId,
+    query
+  );
+
+  res.status(200).json({
+    success: true,
+    ...result,
+  });
+});
+
+export const verify = asyncHandler(async (req: AuthenticatedRequest, res: Response) => {
+  const { classification = 'sale' } = req.body;
+
+  const sale = await salesService.verifySale(
+    req.user!.userId,
+    req.params.businessId,
+    req.params.id,
+    classification
+  );
+
+  res.status(200).json({
+    success: true,
+    data: sale,
+    message: 'Transaction verified successfully',
+  });
+});
+
+export const reclassify = asyncHandler(async (req: AuthenticatedRequest, res: Response) => {
+  const { classification } = req.body;
+
+  if (!classification || typeof classification !== 'string') {
+    return res.status(400).json({
+      success: false,
+      message: 'Classification is required',
+    });
+  }
+
+  const sale = await salesService.reclassifySale(
+    req.user!.userId,
+    req.params.businessId,
+    req.params.id,
+    classification
+  );
+
+  res.status(200).json({
+    success: true,
+    data: sale,
+    message: 'Transaction reclassified successfully',
   });
 });

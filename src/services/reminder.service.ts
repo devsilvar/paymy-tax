@@ -42,9 +42,12 @@ export type ReminderType =
   | 'margin_warning'
   | 'invoice_overdue'
   | 'payment_successful'
-  | 'dva_received';
+  | 'payment_refunded'
+  | 'dva_received'
+  | 'dva_validation_failed'
+  | 'transaction_needs_verification';
 
-export type ReminderReferenceType = 'invoice' | 'payment' | 'sales_transaction';
+export type ReminderReferenceType = 'invoice' | 'payment' | 'sales_transaction' | 'business';
 
 const REPORT_REMINDER_MESSAGES: Record<
   'tax_deadline' | 'unfiled_tax' | 'unfinalized_report' | 'unpaid_tax',
@@ -61,8 +64,14 @@ const REPORT_REMINDER_MESSAGES: Record<
 };
 
 function formatMonth(month: number, year: number): string {
-  const date = new Date(year, month - 1, 1);
-  return date.toLocaleDateString('en-NG', { month: 'long', year: 'numeric' });
+  // UTC to match the rest of the service. Display formatters below pin the
+  // timezone explicitly so the label reads correctly regardless of host TZ.
+  const date = new Date(Date.UTC(year, month - 1, 1));
+  return date.toLocaleDateString('en-NG', {
+    month: 'long',
+    year: 'numeric',
+    timeZone: 'UTC',
+  });
 }
 
 // ─── Determine which report-state reminder is needed ────────
@@ -167,7 +176,10 @@ export async function generateReminders(
 ) {
   const business = await verifyBusinessOwnership(userId, businessId);
 
-  const monthStart = new Date(year, month - 1, 1);
+  // UTC — must match the UTC bounds used by calculateTax so the unique-key
+  // lookup on (businessId, taxMonth) hits the right row, and so the reminder's
+  // scheduledDate (also @db.Date) stores the calendar month the user meant.
+  const monthStart = new Date(Date.UTC(year, month - 1, 1));
   const monthLabel = formatMonth(month, year);
 
   // 1. Tax-state reminder for the requested month
@@ -274,7 +286,13 @@ async function checkDeadlineReminderForBusiness(business: {
     return null;
   }
 
-  const monthStart = new Date(currentYear, currentMonth - 1, 1);
+  // UTC-bounded so the unique-key lookup on (businessId, taxMonth) — which
+  // calculateTax writes in UTC — actually hits. `currentMonth/Year` are still
+  // local-tz because the "is today >= reminderDay?" check above is naturally a
+  // local-calendar question; the host runs in Lagos TZ (Render env: `TZ=Africa/Lagos`)
+  // so local == Lagos and the two agree. If we ever ship to a non-Lagos host,
+  // recompute today/currentMonth/currentYear in the Lagos zone explicitly.
+  const monthStart = new Date(Date.UTC(currentYear, currentMonth - 1, 1));
 
   const report = await prisma.monthlyTaxReport.findUnique({
     where: { businessId_taxMonth: { businessId: business.id, taxMonth: monthStart } },
@@ -315,7 +333,9 @@ export async function generateRemindersForAllBusinesses() {
   const today = now.getDate();
   const currentMonth = now.getMonth() + 1;
   const currentYear = now.getFullYear();
-  const monthStart = new Date(currentYear, currentMonth - 1, 1);
+  // UTC bounds for the same reason as checkDeadlineReminderForBusiness — must
+  // align with calculateTax's UTC taxMonth so the unique-key lookup hits.
+  const monthStart = new Date(Date.UTC(currentYear, currentMonth - 1, 1));
   const monthLabel = formatMonth(currentMonth, currentYear);
 
   const businesses = await prisma.business.findMany({
@@ -386,7 +406,10 @@ export async function createMarginWarning(
   month: number,
   year: number
 ) {
-  const monthStart = new Date(year, month - 1, 1);
+  // UTC — matches calculateTax's UTC monthStart so dedup on
+  // (businessId, type, scheduledDate) lines up with the reminder this
+  // function refreshed last calculation.
+  const monthStart = new Date(Date.UTC(year, month - 1, 1));
 
   const { created, reminder } = await createReminderOnce({
     businessId,
@@ -595,7 +618,12 @@ export async function getActiveReminders(userId: string, businessId: string) {
   await verifyBusinessOwnership(userId, businessId);
 
   const now = new Date();
-  const prevMonthStart = new Date(now.getFullYear(), now.getMonth() - 1, 1);
+  // UTC — scheduledDate is @db.Date (UTC); filtering with a local-tz
+  // boundary on a UTC+ host shifts the cutoff by a day and the previous
+  // month's reminders quietly drop off the bell.
+  const prevMonthStart = new Date(
+    Date.UTC(now.getUTCFullYear(), now.getUTCMonth() - 1, 1)
+  );
 
   const reminders = await prisma.reminder.findMany({
     where: {

@@ -10,6 +10,7 @@
 
 import { PrismaClient } from '@prisma/client';
 import bcrypt from 'bcrypt';
+import { seedTransactionClassifications } from './seeds/transaction-classifications';
 
 const prisma = new PrismaClient();
 
@@ -27,7 +28,13 @@ async function main() {
   console.log('🌱 Starting database seed...\n');
 
   // =================================
-  // 0. CREATE ADMIN USER
+  // 0. SEED TRANSACTION CLASSIFICATIONS
+  // =================================
+  await seedTransactionClassifications();
+  console.log('');
+
+  // =================================
+  // 1. CREATE ADMIN USER
   // =================================
   console.log('🔑 Creating admin user...');
 
@@ -86,6 +93,7 @@ async function main() {
     update: {},
     create: {
       userId: testUser1.id,
+      merchantId: 'PMTW001',
       businessName: 'ABC Retail Store',
       ownerName: 'John Doe',
       taxId: '12345678-0001',
@@ -103,6 +111,7 @@ async function main() {
     update: {},
     create: {
       userId: testUser2.id,
+      merchantId: 'PMTW002',
       businessName: 'Tech Solutions Ltd',
       ownerName: 'Jane Smith',
       taxId: '12345678-0002',
@@ -185,8 +194,15 @@ async function main() {
   const grossProfit = totalSales - totalExpenses;
   const taxPayable = grossProfit * 0.075;
 
-  await prisma.monthlyTaxReport.create({
-    data: {
+  await prisma.monthlyTaxReport.upsert({
+    where: {
+      businessId_taxMonth: {
+        businessId: business1.id,
+        taxMonth: new Date('2026-03-01'),
+      },
+    },
+    update: {},
+    create: {
       businessId: business1.id,
       taxMonth: new Date('2026-03-01'),
       totalSales,

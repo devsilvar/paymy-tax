@@ -155,6 +155,55 @@ export async function getMe(userId: string) {
   return sanitizeUser(user);
 }
 
+/**
+ * Patch the authenticated user's profile.
+ *
+ * Phone-only for now — see `updateMeSchema` for the why. The DB has a
+ * `@unique` constraint on `phone`, so we pre-check for friendlier errors
+ * than the generic P2002 → DUPLICATE_ENTRY mapping (which doesn't tell the
+ * user *which* column collided). If two requests race past this check, the
+ * DB still rejects the loser — pre-check is for UX, the constraint is the
+ * safety net.
+ *
+ * Audit trail: `user.phone_updated` with old/new last-4 of phone (full
+ * number is PII, only diff-traceable digits are logged). Old-phone audit
+ * captured *before* the write so a rollback can read it.
+ */
+export async function updateMe(userId: string, input: { phone: string }) {
+  const user = await prisma.user.findUnique({ where: { id: userId } });
+  if (!user) {
+    throw new AppError(404, 'User not found', 'USER_NOT_FOUND');
+  }
+
+  // No-op if unchanged. Saves a write + an audit row.
+  if (user.phone === input.phone) {
+    return sanitizeUser(user);
+  }
+
+  const existing = await prisma.user.findUnique({ where: { phone: input.phone } });
+  if (existing && existing.id !== userId) {
+    throw new AppError(409, 'That phone number is already in use', 'PHONE_IN_USE');
+  }
+
+  const updated = await prisma.user.update({
+    where: { id: userId },
+    data: { phone: input.phone },
+  });
+
+  // Fire-and-forget; audit failure must not block the user's profile edit.
+  logAudit({
+    userId,
+    action: 'user.phone_updated',
+    resourceType: 'user',
+    resourceId: userId,
+    oldData: { phoneLast4: user.phone ? user.phone.slice(-4) : null },
+    newData: { phoneLast4: input.phone.slice(-4) },
+  });
+
+  logger.info('User phone updated', { userId });
+  return sanitizeUser(updated);
+}
+
 export async function changePassword(
   userId: string,
   currentPassword: string,
@@ -239,7 +288,7 @@ export async function forgotPassword(email: string) {
   logger.info('PASSWORD RESET EMAIL (dummy)', {
     to: user.email,
     subject: 'Reset your PayMyTax password',
-    resetLink,
+    linkLength: resetLink.length,
     expiresInMinutes: RESET_TOKEN_EXPIRY_MINUTES,
   });
   // ==================================================================

@@ -8,6 +8,7 @@ import {
   changePasswordSchema,
   forgotPasswordSchema,
   resetPasswordSchema,
+  updateMeSchema,
 } from '@/validators/auth.validator';
 import * as authService from '@/services/auth.service';
 
@@ -50,6 +51,17 @@ export const getMe = asyncHandler(async (req: AuthenticatedRequest, res: Respons
   res.status(200).json({
     success: true,
     data: user,
+  });
+});
+
+export const updateMe = asyncHandler(async (req: AuthenticatedRequest, res: Response) => {
+  const input = updateMeSchema.parse(req.body);
+  const user = await authService.updateMe(req.user!.userId, input);
+
+  res.status(200).json({
+    success: true,
+    data: user,
+    message: 'Profile updated',
   });
 });
 

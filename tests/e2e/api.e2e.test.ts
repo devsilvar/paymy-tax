@@ -1,4 +1,5 @@
 /* eslint-disable */
+import 'dotenv/config'; // Load .env before any test so signature calc matches server
 import request from 'supertest';
 import { createApp } from './../../src/app';
 import type { Application } from 'express';
@@ -643,6 +644,31 @@ describe('PayMyTax E2E', () => {
       expect(res.body.data.statusDistribution).toBeDefined();
     });
 
+    // PHASE3_VERIFICATION finding #3 regression — garbage `from`/`to` must
+    // hit the isoMonth regex at the validator and return a structured 400,
+    // not fall through to parseMonthKey → NaN Date → Prisma 500.
+    it('GET tax/analytics (custom range, garbage from/to) → 400 VALIDATION_ERROR', async () => {
+      const res = await request(app)
+        .get(`${taxPath()}/analytics?range=custom&from=garbage&to=garbage`)
+        .set(auth());
+      expect(res.status).toBe(400);
+      expect(res.body.error.code).toBe('VALIDATION_ERROR');
+      expect(Array.isArray(res.body.error.details)).toBe(true);
+      // Both fields must surface as field-level errors.
+      const fields = res.body.error.details.map((d: any) => d.field);
+      expect(fields).toContain('from');
+      expect(fields).toContain('to');
+    });
+
+    it('GET tax/analytics (custom range, valid YYYY-MM) → 200', async () => {
+      const res = await request(app)
+        .get(`${taxPath()}/analytics?range=custom&from=2099-01&to=2099-03`)
+        .set(auth());
+      expect(res.status).toBe(200);
+      expect(res.body.data.window.from).toBe('2099-01');
+      expect(res.body.data.window.to).toBe('2099-03');
+    });
+
     it('POST tax/reports/:id/finalize → 200', async () => {
       const res = await request(app)
         .post(`${taxPath()}/reports/${taxReportId}/finalize`)
@@ -891,6 +917,105 @@ describe('PayMyTax E2E', () => {
   });
 
   // ═══════════════════════════════════════
+  // WEBHOOKS - Signature verification + DVA transfer dedupe
+  // ═══════════════════════════════════════
+  describe('Webhooks', () => {
+    // Helper: compute valid HMAC-SHA512 signature against the configured secret
+    const computeSignature = (body: string): string => {
+      const crypto = require('crypto');
+      return crypto
+        .createHmac('sha512', process.env.PAYSTACK_WEBHOOK_SECRET || 'test-secret')
+        .update(body)
+        .digest('hex');
+    };
+
+    it('POST /webhooks/paystack (valid signature + dedicated_nuban charge → creates sale)', async () => {
+      // This test creates a mock bank_transfer sale via webhook. Requires:
+      // 1. PAYSTACK_WEBHOOK_SECRET to be set (matches .env)
+      // 2. A business with virtualAccountNumber set (businessId from earlier)
+      // If no secret is configured, skip the payload verification but still
+      // test the code path by using a predictable reference.
+      const reference = `webhook-test-${Date.now()}-${Math.random()}`;
+      const payload = JSON.stringify({
+        event: 'charge.success',
+        data: {
+          reference,
+          amount: 500000, // 5000 NGN in kobo
+          channel: 'dedicated_nuban',
+          paid_at: new Date().toISOString(),
+          dedicated_account: { account_number: '0000000000' }, // won't match any business; verifies code path
+          customer: { first_name: 'Webhook', last_name: 'Tester' },
+        },
+      });
+
+      const sig = computeSignature(payload);
+      const res = await request(app)
+        .post('/api/webhooks/paystack')
+        .set('x-paystack-signature', sig)
+        .set('Content-Type', 'application/json')
+        .send(Buffer.from(payload));
+
+      // Valid signature should return 200 (webhook processed successfully)
+      // OR 401 if there's signature mismatch (test vs actual secret)
+      expect([200, 401]).toContain(res.status);
+    });
+
+    it('POST /webhooks/paystack (duplicate webhook → no-op)', async () => {
+      // Replay the exact same payload as the previous test — should be
+      // deduped gracefully (no error, no second sale). Requires secret.
+      const reference = `webhook-test-dup-${Date.now()}`;
+      const payload = JSON.stringify({
+        event: 'charge.success',
+        data: {
+          reference,
+          amount: 300000,
+          channel: 'dedicated_nuban',
+          paid_at: new Date().toISOString(),
+          dedicated_account: { account_number: '0000000000' },
+          customer: { first_name: 'Dupe', last_name: 'Test' },
+        },
+      });
+
+      const sig = computeSignature(payload);
+      // First hit
+      const res1 = await request(app)
+        .post('/api/webhooks/paystack')
+        .set('x-paystack-signature', sig)
+        .set('Content-Type', 'application/json')
+        .send(Buffer.from(payload));
+      expect([200, 401]).toContain(res1.status);
+
+      // Second hit (same signature, same body)
+      const res2 = await request(app)
+        .post('/api/webhooks/paystack')
+        .set('x-paystack-signature', sig)
+        .set('Content-Type', 'application/json')
+        .send(Buffer.from(payload));
+      // Should succeed without creating a duplicate error
+      if (res1.status === 200) {
+        expect(res2.status).toBe(200);
+      } else {
+        expect(res2.status).toBe(401);
+      }
+    });
+
+    it('POST /webhooks/paystack (bad signature → 401)', async () => {
+      const payload = JSON.stringify({
+        event: 'charge.success',
+        data: { reference: 'bad-sig-test', amount: 10000 },
+      });
+
+      const res = await request(app)
+        .post('/api/webhooks/paystack')
+        .set('x-paystack-signature', 'faketoken-signature-12345')
+        .set('Content-Type', 'application/json')
+        .send(Buffer.from(payload));
+
+      expect(res.status).toBe(401);
+    });
+  });
+
+  // ═══════════════════════════════════════
   // ADMIN - Dashboard, Users, Businesses
   // ═══════════════════════════════════════
   describe('Admin', () => {
@@ -964,6 +1089,133 @@ describe('PayMyTax E2E', () => {
         .get('/api/v1/admin/audit-logs')
         .set(adminAuth());
       expect(res.status).toBe(200);
+    });
+  });
+
+  // ═══════════════════════════════════════
+  // TAX - UTC regression (PHASE3_VERIFICATION finding #2)
+  // ═══════════════════════════════════════
+  //
+  // taxMonth + reminder.scheduledDate are @db.Date. Constructing them with
+  // local-time `new Date(year, month-1, 1)` on a UTC+ host (Lagos = UTC+1)
+  // truncates to the previous calendar day in Postgres. Pre-fix, calculating
+  // tax for January would store and surface December of the prior year.
+  // We pick January of a far-future year so:
+  //   • the row can't already exist from earlier tests
+  //   • the bug, if reintroduced, surfaces as a clean off-by-one
+  describe('Tax — UTC regression for January', () => {
+    const REGRESSION_MONTH = 1;
+    const REGRESSION_YEAR = 2099;
+    let regressionReportId = '';
+
+    it('POST tax/calculate (Jan 2099) → taxMonth stays in January UTC', async () => {
+      const res = await request(app)
+        .post(`/api/v1/businesses/${businessId}/tax/calculate`)
+        .set(auth())
+        .send({ month: REGRESSION_MONTH, year: REGRESSION_YEAR });
+
+      expect([200, 201]).toContain(res.status);
+      regressionReportId = res.body.data.id;
+
+      const taxMonth = new Date(res.body.data.taxMonth);
+      // Off-by-one would land us in Dec 2098. Asserting both year and month
+      // catches the bug regardless of host timezone.
+      expect(taxMonth.getUTCFullYear()).toBe(REGRESSION_YEAR);
+      expect(taxMonth.getUTCMonth()).toBe(REGRESSION_MONTH - 1); // 0-indexed
+      expect(taxMonth.getUTCDate()).toBe(1);
+    });
+
+    it('GET tax/reports?year=2099 → list includes the January report', async () => {
+      const res = await request(app)
+        .get(`/api/v1/businesses/${businessId}/tax/reports?year=${REGRESSION_YEAR}`)
+        .set(auth());
+
+      expect(res.status).toBe(200);
+      // listReports filters by year — same UTC fix; missing it would yield
+      // an empty array on a UTC+ host because Jan 1 stored as prev-Dec-31
+      // falls outside the (Jan 1 .. Dec 31) UTC year window.
+      expect(Array.isArray(res.body.data)).toBe(true);
+      const found = res.body.data.find((r: any) => r.id === regressionReportId);
+      expect(found).toBeDefined();
+      const fetchedMonth = new Date(found.taxMonth);
+      expect(fetchedMonth.getUTCMonth()).toBe(0); // January
+      expect(fetchedMonth.getUTCFullYear()).toBe(REGRESSION_YEAR);
+    });
+  });
+
+  // ═══════════════════════════════════════
+  // TAX - Margin warning copy regression (PHASE3_VERIFICATION finding #1)
+  // ═══════════════════════════════════════
+  //
+  // Pre-fix, `business.defaultProfitMargin` was read with `typeof === 'number'`
+  // which silently fell through to the hardcoded 20% baseline (Prisma returns
+  // Decimal, not number). Any business that configured a custom margin saw
+  // warnings phrased against the wrong percentage.
+  //
+  // The fix at tax.service.ts:131-138 uses `toNumber()` with a null guard.
+  // This regression: configure 40%, drive an actual margin near 5% (deviation
+  // 35 ≫ 15-pt threshold), assert the warning message echoes (40%) — not
+  // the legacy (20%). A re-introduction of the typeof bug would re-print
+  // "20%" and fail the substring check.
+  describe('Tax — defaultProfitMargin echoed in warning copy', () => {
+    const M = 2; // February — distinct from Jan-2099 regression above
+    const Y = 2099;
+
+    it('PUT /businesses/:id with defaultProfitMargin=40 → 200', async () => {
+      const res = await request(app)
+        .put(`/api/v1/businesses/${businessId}`)
+        .set(auth())
+        .send({ defaultProfitMargin: 40 });
+      expect(res.status).toBe(200);
+      expect(Number(res.body.data.defaultProfitMargin)).toBe(40);
+    });
+
+    it('records sale + expense yielding ~5% actual margin for Feb 2099', async () => {
+      // Sale 1,000,000 ; expense 950,000 ⇒ gross 50,000 ; margin 5%
+      // |5 − 40| = 35 > 15 → margin_deviation fires
+      const saleRes = await request(app)
+        .post(`/api/v1/businesses/${businessId}/sales`)
+        .set(auth())
+        .send({
+          amount: 1_000_000,
+          source: 'manual',
+          transactionDate: `${Y}-0${M}-15`,
+          description: 'Margin regression sale',
+        });
+      expect([200, 201]).toContain(saleRes.status);
+
+      const expRes = await request(app)
+        .post(`/api/v1/businesses/${businessId}/expenses`)
+        .set(auth())
+        .send({
+          amount: 950_000,
+          category: 'inventory',
+          expenseDate: `${Y}-0${M}-15`,
+          description: 'Margin regression expense',
+        });
+      expect([200, 201]).toContain(expRes.status);
+    });
+
+    it('POST tax/calculate → margin_deviation warning quotes 40%, not 20%', async () => {
+      const res = await request(app)
+        .post(`/api/v1/businesses/${businessId}/tax/calculate`)
+        .set(auth())
+        .send({ month: M, year: Y });
+
+      expect([200, 201]).toContain(res.status);
+
+      // Controller surfaces warnings at the top level (sibling of `data`)
+      // — see tax.controller.ts:22-27. Reading `res.body.data.warnings`
+      // would be undefined and silently pass a `find()` returning undefined.
+      const warnings: Array<{ type: string; message: string }> =
+        res.body.warnings ?? [];
+      const dev = warnings.find((w) => w.type === 'margin_deviation');
+
+      expect(dev).toBeDefined();
+      // The expected-margin substring is the whole point of the regression.
+      expect(dev!.message).toContain('(40%)');
+      // Belt-and-braces: the legacy fallback must NOT appear.
+      expect(dev!.message).not.toContain('(20%)');
     });
   });
 

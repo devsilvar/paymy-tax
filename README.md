@@ -38,6 +38,16 @@ npm run dev
 # Server will be available at http://localhost:3000
 ```
 
+### Testing Paystack webhooks locally (ngrok)
+
+Paystack can't reach `localhost`. Run `ngrok http 3000`, copy the
+`https://<id>.ngrok-free.app` URL, append `/api/webhooks/paystack`, and paste
+into the Paystack dashboard (Test Mode → Settings → API Keys & Webhooks →
+Webhook URL). Full walkthrough + gotchas in `../paymentPlan.md` →
+"Local webhook tunneling (ngrok)". `PAYSTACK_PREFERRED_BANK` is auto-detected
+from `PAYSTACK_SECRET_KEY` (`sk_test_*` → `test-bank`, else `wema-bank`) — no
+config needed unless you use a non-Wema live partner bank.
+
 ### Database Commands
 
 ```bash

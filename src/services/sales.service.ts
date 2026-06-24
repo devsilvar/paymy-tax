@@ -36,7 +36,12 @@ async function assertMonthNotLocked(
   transactionDate: Date,
   db: TxClient | typeof prisma = prisma
 ) {
-  const monthStart = new Date(transactionDate.getFullYear(), transactionDate.getMonth(), 1);
+  // UTC — must match calculateTax's UTC taxMonth so the unique-key lookup
+  // hits. transactionDate is itself @db.Date (already UTC on read), so we
+  // derive year/month in UTC and rebuild the first-of-month in UTC.
+  const monthStart = new Date(
+    Date.UTC(transactionDate.getUTCFullYear(), transactionDate.getUTCMonth(), 1)
+  );
 
   const report = await db.monthlyTaxReport.findUnique({
     where: {
@@ -89,6 +94,7 @@ export async function createSale(
       customerName: input.customerName,
       transactionDate: input.transactionDate,
       metadata: input.metadata !== undefined ? input.metadata : undefined,
+      needsVerification: input.needsVerification ?? false,
       createdBy: userId,
     },
   });
@@ -258,7 +264,9 @@ export async function deleteSale(
 
   await assertMonthNotLocked(businessId, existing.transactionDate, db);
 
-  await db.salesTransaction.delete({ where: { id: saleId } });
+  await db.salesTransaction.delete({
+    where: { id: saleId },
+  });
 
   logAudit({
     userId,
@@ -332,4 +340,135 @@ export async function getMonthlySummary(
     transactionCount: count,
     sourceBreakdown,
   };
+}
+
+// ─── Verification ───────────────────────────────────────────
+
+export async function getUnverifiedSales(
+  userId: string,
+  businessId: string,
+  query?: { page?: number; limit?: number }
+) {
+  await verifyBusinessOwnership(userId, businessId);
+
+  const page = query?.page ?? 1;
+  const limit = query?.limit ?? 50;
+  const offset = (page - 1) * limit;
+
+  const [sales, total] = await Promise.all([
+    prisma.salesTransaction.findMany({
+      where: { businessId, needsVerification: true },
+      skip: offset,
+      take: limit,
+      orderBy: { transactionDate: 'desc' },
+    }),
+    prisma.salesTransaction.count({
+      where: { businessId, needsVerification: true },
+    }),
+  ]);
+
+  const totalPages = Math.ceil(total / limit);
+
+  return {
+    data: sales,
+    pagination: {
+      page,
+      limit,
+      total,
+      totalPages,
+      hasNext: page < totalPages,
+      hasPrev: page > 1,
+    },
+  };
+}
+
+export async function verifySale(
+  userId: string,
+  businessId: string,
+  saleId: string,
+  classificationName: string,
+  tx?: TxClient
+) {
+  const db = tx ?? prisma;
+
+  await verifyBusinessOwnership(userId, businessId, db);
+
+  const sale = await db.salesTransaction.findUnique({ where: { id: saleId } });
+
+  if (!sale || sale.businessId !== businessId) {
+    throw new AppError(404, 'Sale not found', 'SALE_NOT_FOUND');
+  }
+
+  if (!sale.needsVerification) {
+    throw new AppError(400, 'Sale is already verified', 'ALREADY_VERIFIED');
+  }
+
+  // Find classification
+  const classification = await db.transactionClassification.findFirst({
+    where: {
+      OR: [
+        { name: classificationName },
+        { name: { equals: classificationName, mode: 'insensitive' } },
+      ],
+      isActive: true,
+    },
+  });
+
+  if (!classification) {
+    throw new AppError(400, `Classification "${classificationName}" not found`, 'INVALID_CLASSIFICATION');
+  }
+
+  // Determine if taxable based on classification
+  const isTaxable = classification.taxTreatment === 'taxable';
+  const isRevenue = classification.isRevenue;
+
+  const updated = await db.salesTransaction.update({
+    where: { id: saleId },
+    data: {
+      needsVerification: false,
+      verifiedAt: new Date(),
+      verifiedBy: userId,
+      finalClassification: classificationName,
+      classificationId: classification.id,
+      status: 'confirmed', // Always confirm when verified
+      isTaxable,
+    },
+  });
+
+  logAudit({
+    userId,
+    businessId,
+    action: isRevenue ? 'sale.verified' : 'sale.reclassified',
+    resourceType: 'sales_transaction',
+    resourceId: saleId,
+    newData: {
+      classification: classificationName,
+      category: classification.category,
+      isTaxable,
+      isRevenue,
+    },
+  }, tx);
+
+  logger.info('Transaction classified', {
+    saleId,
+    businessId,
+    userId,
+    classification: classificationName,
+    category: classification.category,
+    isTaxable,
+    isRevenue,
+  });
+
+  return updated;
+}
+
+export async function reclassifySale(
+  userId: string,
+  businessId: string,
+  saleId: string,
+  classificationName: string,
+  tx?: TxClient
+) {
+  // Reclassify is now just an alias to verify with any classification
+  return verifySale(userId, businessId, saleId, classificationName, tx);
 }

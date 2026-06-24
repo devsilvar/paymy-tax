@@ -22,6 +22,9 @@ import dvaRoutes from './dva.routes';
 import invoiceRoutes from './invoice.routes';
 import searchRoutes from './search.routes';
 import publicRoutes from './public.routes';
+import bankRoutes from './bank.routes';
+import testRoutes from './test.routes';
+import transactionClassificationRoutes from './transaction-classification.routes';
 
 const router = Router();
 
@@ -48,7 +51,14 @@ v1.use('/businesses/:businessId/reminders', reminderRoutes);
 v1.use('/businesses/:businessId/dva', dvaRoutes);
 v1.use('/businesses/:businessId/invoices', invoiceRoutes);
 v1.use('/businesses/:businessId/search', searchRoutes);
+v1.use('/banks', bankRoutes);
+v1.use('/transaction-classifications', transactionClassificationRoutes);
 v1.use('/admin', adminRoutes);
+
+// Test endpoints (dev/test only)
+if (process.env.NODE_ENV !== 'production') {
+  v1.use('/test', testRoutes);
+}
 
 router.use('/v1', v1);
 

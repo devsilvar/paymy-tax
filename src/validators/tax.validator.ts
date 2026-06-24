@@ -52,9 +52,22 @@ export const dashboardQuerySchema = z.object({
 // edge — downstream code builds the window explicitly to avoid TZ drift.
 const isoMonth = z.string().regex(/^\d{4}-(0[1-9]|1[0-2])$/, 'must be ISO month YYYY-MM');
 
+// Apply the isoMonth regex to from/to so garbage input returns a structured
+// 400 at the validator boundary rather than falling through to the service,
+// where `parseMonthKey` would produce an Invalid Date and Prisma would crash
+// the request with a 500.
+const queryIsoMonth = z.preprocess(
+  (val) => {
+    if (val === undefined) return undefined;
+    if (Array.isArray(val)) return val[0];
+    return val;
+  },
+  isoMonth.optional()
+);
+
 export const taxAnalyticsQuerySchema = z.object({
-  from: queryString.optional(),
-  to: queryString.optional(),
+  from: queryIsoMonth,
+  to: queryIsoMonth,
   range: z.enum(['6m', '12m', '24m', 'all', 'custom']).optional(),
 });
 

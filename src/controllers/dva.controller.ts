@@ -2,6 +2,11 @@ import { Response } from 'express';
 import { asyncHandler } from '@/middleware/errorHandler';
 import { AuthenticatedRequest } from '@/types';
 import * as dvaService from '@/services/dva.service';
+import {
+  validateCustomerSchema,
+  resolveSettlementSchema,
+  connectSettlementSchema,
+} from '@/validators/dva.validator';
 
 export const setupVirtualAccount = asyncHandler(async (req: AuthenticatedRequest, res: Response) => {
   const result = await dvaService.setupVirtualAccount(
@@ -19,20 +24,15 @@ export const setupVirtualAccount = asyncHandler(async (req: AuthenticatedRequest
 });
 
 export const validateCustomer = asyncHandler(async (req: AuthenticatedRequest, res: Response) => {
-  const { bvn } = req.body;
-
-  if (!bvn || typeof bvn !== 'string' || bvn.length !== 11 || !/^\d{11}$/.test(bvn)) {
-    res.status(400).json({
-      success: false,
-      error: { code: 'INVALID_BVN', message: 'BVN must be exactly 11 digits' },
-    });
-    return;
-  }
+  // Zod throws on parse fail — the global error handler maps ZodError to a
+  // 400 with field-level details. Replaces the previous ad-hoc BVN-only
+  // check and now enforces the bank-account shape Paystack requires.
+  const input = validateCustomerSchema.parse(req.body);
 
   const result = await dvaService.validateCustomer(
     req.user!.userId,
     req.params.businessId,
-    bvn,
+    input,
   );
 
   res.status(200).json({
@@ -52,4 +52,47 @@ export const getVirtualAccount = asyncHandler(async (req: AuthenticatedRequest, 
     success: true,
     data: result,
   });
+});
+
+
+
+export const requery = asyncHandler(async (req: AuthenticatedRequest, res: Response) => {
+  const result = await dvaService.requeryDVA(
+    req.user!.userId,
+    req.params.businessId
+  );
+
+  res.status(200).json({
+    success: true,
+    data: result,
+    message: result.message,
+  });
+});
+
+
+
+export const resolveSettlement = asyncHandler(async (req: AuthenticatedRequest, res: Response) => {
+  const { bankCode, accountNumber } = resolveSettlementSchema.parse(req.body);
+
+  const result = await dvaService.resolveSettlementAccount(
+    req.user!.userId,
+    req.params.businessId,
+    bankCode,
+    accountNumber,
+  );
+
+  res.status(200).json({ success: true, data: result });
+});
+
+export const connectSettlement = asyncHandler(async (req: AuthenticatedRequest, res: Response) => {
+  const { bankCode, bankName, accountNumber, commissionPct } = connectSettlementSchema.parse(req.body);
+
+  const result = await dvaService.connectSettlementBank(req.user!.userId, req.params.businessId, {
+    bankCode,
+    bankName,
+    accountNumber,
+    commissionPct,
+  });
+
+  res.status(200).json({ success: true, data: result });
 });

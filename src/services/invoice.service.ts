@@ -499,7 +499,12 @@ async function assertMonthNotLocked(
   date: Date,
   db: TxClient | typeof prisma,
 ) {
-  const monthStart = new Date(date.getFullYear(), date.getMonth(), 1);
+  // UTC — taxMonth is written in UTC by calculateTax; local-tz derivation
+  // would miss the row on UTC+ hosts and let an invoice be marked paid in
+  // a locked month.
+  const monthStart = new Date(
+    Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), 1)
+  );
 
   const report = await db.monthlyTaxReport.findUnique({
     where: { businessId_taxMonth: { businessId, taxMonth: monthStart } },
@@ -1005,10 +1010,9 @@ function buildPublicInvoiceLink(shareToken: string): string {
 }
 
 /**
- * Build a wa.me deep link for the customer's phone, embedding a real public
- * PDF URL the customer can tap. Does NOT actually send anything server-side —
- * the SME opens the link on their device, WhatsApp launches with the message
- * pre-filled, and they tap send from their own account.
+ * Build a wa.me deep link for the customer's phone and generate the PDF buffer
+ * for direct attachment in WhatsApp. The client receives both the PDF file and
+ * message metadata to enable native file sharing on mobile or direct PDF sending.
  *
  * Allowed in any non-cancelled state: draft (first send), sent/overdue
  * (collections follow-up), paid (forward a receipt). The wording in `message`
@@ -1026,11 +1030,16 @@ export async function sendInvoiceByWhatsApp(
   waUrl: string;
   message: string;
   pdfUrl: string;
+  pdfBuffer: Buffer;
+  filename: string;
   to: string;
 }> {
   const business = await verifyBusinessOwnership(userId, businessId);
 
-  const existing = await prisma.invoice.findUnique({ where: { id: invoiceId } });
+  const existing = await prisma.invoice.findUnique({
+    where: { id: invoiceId },
+    include: { lines: { orderBy: { sortOrder: 'asc' } } },
+  });
   if (!existing || existing.businessId !== businessId) {
     throw new AppError(404, 'Invoice not found', 'INVOICE_NOT_FOUND');
   }
@@ -1059,9 +1068,24 @@ export async function sendInvoiceByWhatsApp(
   // internally — same pattern as bcrypt outside transactions.
   const shareToken = await ensureInvoiceShareToken(businessId, invoiceId);
 
+  // Generate the PDF buffer for direct attachment
+  const pdfBuffer = await buildInvoicePdf(
+    {
+      businessName: business.businessName,
+      merchantId: business.merchantId,
+      ownerName: business.ownerName,
+      taxId: business.taxId,
+      address: business.address,
+      city: business.city,
+      state: business.state,
+    },
+    existing,
+  );
+
   const total = toNumber(existing.total);
   const pdfUrl = buildPublicInvoiceLink(shareToken);
   const isPaid = existing.status === 'paid';
+  const filename = `${existing.invoiceNumber}.pdf`;
 
   const message = isPaid
     ? [
@@ -1070,8 +1094,6 @@ export async function sendInvoiceByWhatsApp(
         `Receipt for invoice ${existing.invoiceNumber} from ${business.businessName}.`,
         `Amount paid: ${formatNairaMinor(total)}`,
         existing.paidAt ? `Paid on: ${formatDateHuman(existing.paidAt)}` : '',
-        ``,
-        `View / download: ${pdfUrl}`,
         ``,
         `— Sent via PayMyTax by WallX`,
       ]
@@ -1084,8 +1106,6 @@ export async function sendInvoiceByWhatsApp(
         `Amount due: ${formatNairaMinor(total)}`,
         `Due date: ${formatDateHuman(existing.dueDate)}`,
         existing.paymentTerms ? `\nPayment terms:\n${existing.paymentTerms}` : '',
-        ``,
-        `View / download: ${pdfUrl}`,
         ``,
         `— Sent via PayMyTax by WallX`,
       ]
@@ -1133,16 +1153,17 @@ export async function sendInvoiceByWhatsApp(
     return updatedInvoice;
   });
 
-  logger.info('Invoice WhatsApp link built', {
+  logger.info('Invoice PDF generated for WhatsApp', {
     invoiceId,
     invoiceNumber: existing.invoiceNumber,
     to: normalized,
     businessId,
     userId,
     paid: isPaid,
+    pdfBytes: pdfBuffer.length,
   });
 
   if (updated) maybeFireOverdueReminderOnSend(updated);
 
-  return { invoice: updated, waUrl, message, pdfUrl, to: normalized };
+  return { invoice: updated, waUrl, message, pdfUrl, pdfBuffer, filename, to: normalized };
 }

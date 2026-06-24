@@ -5,7 +5,11 @@ import logger from '@/lib/logger';
 import { AppError } from '@/middleware/errorHandler';
 import { logAudit } from '@/lib/audit';
 import { getPaymentProvider } from '@/lib/payment';
-import { processDVAAssignmentWebhook, processDVATransferWebhook } from '@/services/dva.service';
+import {
+  processDVAAssignmentWebhook,
+  processDVATransferWebhook,
+  processCustomerIdentificationWebhook,
+} from '@/services/dva.service';
 import { createReminderOnce } from '@/services/reminder.service';
 import { formatNaira, formatTaxMonth } from '@/lib/format';
 
@@ -97,20 +101,48 @@ export async function initiatePayment(
     throw new AppError(400, 'No tax payable for this report', 'ZERO_TAX');
   }
 
-  // Generate unique reference
-  const reference = `PMT-${businessId.slice(0, 8)}-${Date.now()}-${crypto.randomBytes(4).toString('hex')}`;
-
-  // Create pending payment record
-  const payment = await prisma.taxPayment.create({
-    data: {
-      businessId,
-      taxReportId,
-      amountPaid: amount,
-      paymentMethod: 'card',
-      transactionReference: reference,
-      paymentStatus: 'pending',
-    },
+  // Idempotency: if an open pending payment already exists for this report,
+  // reuse it instead of spawning a second Paystack transaction. Guards against
+  // double-clicks, refreshes, back-button, and multiple tabs — without
+  // requiring the client to send an idempotency key. Paystack's
+  // /transaction/initialize is itself idempotent on `reference`, so
+  // re-initializing the same reference returns the same checkout session.
+  // A stale pending whose amount no longer matches the report (sales/expenses
+  // edited between attempts) is abandoned and replaced so the SME is never
+  // sent to pay the wrong figure.
+  const existingPending = await prisma.taxPayment.findFirst({
+    where: { taxReportId, paymentStatus: 'pending' },
+    orderBy: { createdAt: 'desc' },
   });
+
+  let payment = existingPending;
+
+  if (existingPending && Number(existingPending.amountPaid) !== amount) {
+    await prisma.taxPayment.update({
+      where: { id: existingPending.id },
+      data: { paymentStatus: 'failed', gatewayResponse: { abandoned: 'amount_changed' } },
+    });
+    payment = null;
+  }
+
+  if (!payment) {
+    // Generate unique reference
+    const reference = `PMT-${businessId.slice(0, 8)}-${Date.now()}-${crypto.randomBytes(4).toString('hex')}`;
+
+    // Create pending payment record
+    payment = await prisma.taxPayment.create({
+      data: {
+        businessId,
+        taxReportId,
+        amountPaid: amount,
+        paymentMethod: 'card',
+        transactionReference: reference,
+        paymentStatus: 'pending',
+      },
+    });
+  }
+
+  const reference = payment.transactionReference;
 
   // Update report status to processing
   await prisma.monthlyTaxReport.update({
@@ -155,21 +187,67 @@ export async function initiatePayment(
 // ─── Webhook Processing ─────────────────────────────────────
 
 export async function processWebhook(signature: string, rawBody: string) {
-  // Verify HMAC-SHA512 signature
-  const hash = crypto
-    .createHmac('sha512', config.paystack.webhookSecret)
-    .update(rawBody)
-    .digest('hex');
+  const eventData = JSON.parse(rawBody);
+  const reference = eventData?.data?.reference || eventData?.data?.dedicated_account?.account_number || null;
 
-  if (hash !== signature) {
-    throw new AppError(401, 'Invalid webhook signature', 'INVALID_SIGNATURE');
-  }
+  // Log event BEFORE signature verification (even rejected events)
+  const webhookEvent = await prisma.paystackWebhookEvent.create({
+    data: {
+      event: eventData.event || 'unknown',
+      reference,
+      signature,
+      rawBody,
+      status: 'received',
+    },
+  });
 
-  const event = JSON.parse(rawBody);
+  try {
+    // Replay prevention: check for duplicate signature in last 5 minutes
+    const fiveMinutesAgo = new Date(Date.now() - 5 * 60 * 1000);
+    const duplicate = await prisma.paystackWebhookEvent.findFirst({
+      where: {
+        signature,
+        createdAt: { gte: fiveMinutesAgo },
+        id: { not: webhookEvent.id },
+      },
+    });
+
+    if (duplicate) {
+      await prisma.paystackWebhookEvent.update({
+        where: { id: webhookEvent.id },
+        data: { status: 'failed', error: 'Duplicate signature (replay attack)', processedAt: new Date() },
+      });
+      throw new AppError(401, 'Duplicate webhook signature detected', 'REPLAY_ATTACK');
+    }
+
+    // Verify HMAC-SHA512 signature
+    const hash = crypto
+      .createHmac('sha512', config.paystack.webhookSecret)
+      .update(rawBody)
+      .digest('hex');
+
+    if (hash !== signature) {
+      await prisma.paystackWebhookEvent.update({
+        where: { id: webhookEvent.id },
+        data: { status: 'failed', error: 'Invalid signature', processedAt: new Date() },
+      });
+      throw new AppError(401, 'Invalid webhook signature', 'INVALID_SIGNATURE');
+    }
+
+    const event = eventData;
 
   // ─── DVA Assignment Webhooks ──────────────────────────────
   if (event.event === 'dedicatedaccount.assign.success' || event.event === 'dedicatedaccount.assign.failed') {
     await processDVAAssignmentWebhook(event);
+    return;
+  }
+
+  // ─── Customer Identification Webhooks (async BVN validation result) ──
+  if (
+    event.event === 'customeridentification.success' ||
+    event.event === 'customeridentification.failed'
+  ) {
+    await processCustomerIdentificationWebhook(event);
     return;
   }
 
@@ -233,6 +311,123 @@ export async function processWebhook(signature: string, rawBody: string) {
       taxReportId: payment.taxReportId,
       amountPaid: Number(payment.amountPaid),
     });
+  }
+
+  if (event.event === 'charge.refunded') {
+    const { reference } = event.data;
+
+    // Check if this was a tax payment
+    const payment = await prisma.taxPayment.findFirst({
+      where: { transactionReference: reference },
+    });
+
+    if (payment) {
+      await prisma.taxPayment.update({
+        where: { id: payment.id },
+        data: { paymentStatus: 'refunded' },
+      });
+
+      logAudit({
+        businessId: payment.businessId,
+        action: 'payment.refunded',
+        resourceType: 'tax_payment',
+        resourceId: payment.id,
+        newData: { reference },
+      });
+
+      await createReminderOnce({
+        businessId: payment.businessId,
+        reminderType: 'payment_refunded',
+        scheduledDate: new Date(),
+        message: `Your tax payment of ${formatNaira(Number(payment.amountPaid))} was refunded`,
+      });
+
+      logger.info('Tax payment refunded', { paymentId: payment.id, reference });
+      return;
+    }
+
+    // Check if this was a DVA transfer (reverse the sale)
+    const sale = await prisma.salesTransaction.findFirst({
+      where: { referenceId: reference, source: 'bank_transfer' },
+    });
+
+    if (sale) {
+      await prisma.salesTransaction.update({
+        where: { id: sale.id },
+        data: { status: 'reversed' },
+      });
+
+      logAudit({
+        businessId: sale.businessId,
+        action: 'sale.reversed',
+        resourceType: 'sales_transaction',
+        resourceId: sale.id,
+        newData: { reference, reason: 'refunded' },
+      });
+
+      logger.info('DVA sale reversed due to refund', { saleId: sale.id, reference });
+      return;
+    }
+
+    // Check if this was an invoice payment (find by linkedSale referenceId)
+    const invoice = await prisma.invoice.findFirst({
+      where: {
+        linkedSale: {
+          referenceId: reference,
+          source: 'online_store',
+        },
+      },
+      include: { linkedSale: true },
+    });
+
+    if (invoice && invoice.linkedSale) {
+      await prisma.$transaction(async (tx) => {
+        // Update invoice to unpaid
+        await tx.invoice.update({
+          where: { id: invoice.id },
+          data: {
+            status: 'overdue',
+            paidAt: null,
+            linkedSaleId: null,
+          },
+        });
+
+        // Reverse the linked sale
+        await tx.salesTransaction.update({
+          where: { id: invoice.linkedSale.id },
+          data: { status: 'reversed' },
+        });
+      });
+
+      logAudit({
+        businessId: invoice.businessId,
+        action: 'invoice.refunded',
+        resourceType: 'invoice',
+        resourceId: invoice.id,
+        newData: { reference },
+      });
+
+      logger.info('Invoice refunded and unlinked', { invoiceId: invoice.id, reference });
+    }
+  }
+
+    // Mark webhook as processed
+    await prisma.paystackWebhookEvent.update({
+      where: { id: webhookEvent.id },
+      data: { status: 'processed', processedAt: new Date() },
+    });
+  } catch (err) {
+    // Log failure and re-throw
+    await prisma.paystackWebhookEvent.update({
+      where: { id: webhookEvent.id },
+      data: {
+        status: 'failed',
+        error: err instanceof Error ? err.message : String(err),
+        processedAt: new Date(),
+      },
+    }).catch(() => {}); // ignore DB errors during error handling
+
+    throw err;
   }
 }
 

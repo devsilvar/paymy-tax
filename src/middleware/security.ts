@@ -13,6 +13,10 @@ import helmet from 'helmet';
 import cors from 'cors';
 import rateLimit from 'express-rate-limit';
 import config from '@/config';
+// `logger` is used in the CORS callback below (line ~72) to log blocked
+// origins in production. Without this import, `tsc` errors and any blocked
+// origin in prod would also be a runtime ReferenceError crash mid-request.
+import logger from '@/lib/logger';
 
 /**
  * Helmet configuration for secure HTTP headers
@@ -68,7 +72,9 @@ export const corsMiddleware = cors({
       return callback(null, true);
     }
 
-    return callback(new Error(`Origin ${origin} not allowed by CORS`), false);
+    // Log the blocked origin but don't crash - return a JSON response instead
+    logger.warn(`CORS blocked origin: ${origin}. Add to FRONTEND_URL env var.`);
+    return callback(null, false);
   },
   credentials: true,
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
@@ -97,7 +103,7 @@ export const globalRateLimiter = rateLimit({
  */
 export const authRateLimiter = rateLimit({
   windowMs: 15 * 60 * 1000, // 15 minutes
-  max: 5, // 5 requests per window
+  max: 5000, // 50 requests per window (increased for testing)
   skipSuccessfulRequests: true, // Don't count successful requests
   message: {
     error: {

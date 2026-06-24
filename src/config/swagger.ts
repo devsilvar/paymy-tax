@@ -1509,6 +1509,98 @@ const options: swaggerJsdoc.Options = {
         },
       },
 
+      // ─── FIRS Remittance (admin) ───────────────────────────
+      '/v1/admin/remittances/summary': {
+        get: {
+          tags: ['Admin'],
+          summary: 'Collected tax awaiting FIRS remittance (total + count)',
+          security: [{ bearerAuth: [] }],
+          responses: { 200: { description: 'Collected summary' }, 401: Unauthorized, 403: Forbidden },
+        },
+      },
+      '/v1/admin/remittances': {
+        get: {
+          tags: ['Admin'],
+          summary: 'List FIRS remittance batches',
+          security: [{ bearerAuth: [] }],
+          parameters: [
+            { $ref: '#/components/parameters/PageParam' },
+            { $ref: '#/components/parameters/LimitParam' },
+            { name: 'status', in: 'query', schema: { type: 'string', enum: ['collected', 'remitting', 'remitted'] } },
+          ],
+          responses: { 200: { description: 'Paginated remittance batches' }, 401: Unauthorized, 403: Forbidden },
+        },
+        post: {
+          tags: ['Admin'],
+          summary: 'Create a remittance batch from collected payments',
+          description:
+            'Groups completed+collected tax payments into a `remitting` batch. With no paymentIds, sweeps all collectable payments.',
+          security: [{ bearerAuth: [] }],
+          requestBody: {
+            required: false,
+            content: {
+              'application/json': {
+                schema: {
+                  type: 'object',
+                  properties: { paymentIds: { type: 'array', items: { type: 'string', format: 'uuid' } } },
+                },
+              },
+            },
+          },
+          responses: {
+            201: { description: 'Batch created' },
+            400: { description: 'No collected payments to remit' },
+            409: { description: 'One or more payments not collectable' },
+            401: Unauthorized,
+            403: Forbidden,
+          },
+        },
+      },
+      '/v1/admin/remittances/{id}': {
+        get: {
+          tags: ['Admin'],
+          summary: 'Get a remittance batch (with member payments)',
+          security: [{ bearerAuth: [] }],
+          parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'string', format: 'uuid' } }],
+          responses: { 200: { description: 'Batch + payments' }, 401: Unauthorized, 403: Forbidden, 404: NotFound },
+        },
+      },
+      '/v1/admin/remittances/{id}/record': {
+        post: {
+          tags: ['Admin'],
+          summary: 'Record a manual FIRS remittance against a batch',
+          description:
+            'Marks the batch (and all member payments) remitted, recording the FIRS reference + optional receipt URL. Idempotent: a second call returns 409.',
+          security: [{ bearerAuth: [] }],
+          parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'string', format: 'uuid' } }],
+          requestBody: {
+            required: true,
+            content: {
+              'application/json': {
+                schema: {
+                  type: 'object',
+                  required: ['firsReference'],
+                  properties: {
+                    firsReference: { type: 'string' },
+                    firsReceiptUrl: { type: 'string', format: 'uri' },
+                    note: { type: 'string' },
+                    transport: { type: 'string', enum: ['manual'], default: 'manual' },
+                  },
+                },
+              },
+            },
+          },
+          responses: {
+            200: { description: 'Remittance recorded' },
+            400: ValidationError,
+            409: { description: 'Already remitted' },
+            401: Unauthorized,
+            403: Forbidden,
+            404: NotFound,
+          },
+        },
+      },
+
       // ─── Webhooks ──────────────────────────────────────────
       '/webhooks/paystack': {
         post: {

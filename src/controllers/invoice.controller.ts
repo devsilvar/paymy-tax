@@ -134,15 +134,18 @@ export const sendByWhatsApp = asyncHandler(async (req: AuthenticatedRequest, res
     req.params.id,
   );
 
+  // Return JSON with PDF as base64 for easier frontend handling
   res.status(200).json({
     success: true,
     data: result.invoice,
-    message: 'Open the WhatsApp link to send',
+    message: 'Invoice ready to send via WhatsApp',
     meta: {
       waUrl: result.waUrl,
       message: result.message,
       pdfUrl: result.pdfUrl,
       to: result.to,
+      filename: result.filename,
+      pdfBase64: result.pdfBuffer.toString('base64'),
     },
   });
 });

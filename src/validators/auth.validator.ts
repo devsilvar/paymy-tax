@@ -41,6 +41,26 @@ export const forgotPasswordSchema = z.object({
   email: z.string().email('Invalid email address').toLowerCase().trim(),
 });
 
+/**
+ * Patch the authenticated user's profile. Currently scoped to `phone` only —
+ * email lives in JWT claims and changing it would require a re-issue +
+ * re-verification flow which we don't have. Wider profile edits live on the
+ * Settings page already; this endpoint specifically exists so the Account
+ * page can inline-capture phone before DVA setup (Paystack requires phone
+ * for fintech customers).
+ *
+ * Phone is validated against E.164 (matches `registerSchema.phone`). The
+ * service layer additionally enforces uniqueness via the DB constraint.
+ */
+export const updateMeSchema = z
+  .object({
+    phone: z
+      .string()
+      .trim()
+      .regex(/^\+?[1-9]\d{1,14}$/, 'Invalid phone number format'),
+  })
+  .strict(); // Reject unknown keys — keeps the surface tight.
+
 export const resetPasswordSchema = z.object({
   token: z.string().min(1, 'Reset token is required'),
   newPassword: z
@@ -58,4 +78,5 @@ export type LoginInput = z.infer<typeof loginSchema>;
 export type RefreshTokenInput = z.infer<typeof refreshTokenSchema>;
 export type ChangePasswordInput = z.infer<typeof changePasswordSchema>;
 export type ForgotPasswordInput = z.infer<typeof forgotPasswordSchema>;
+export type UpdateMeInput = z.infer<typeof updateMeSchema>;
 export type ResetPasswordInput = z.infer<typeof resetPasswordSchema>;

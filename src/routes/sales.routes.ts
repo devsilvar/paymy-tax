@@ -14,6 +14,7 @@ router.use(authenticate);
 router.post('/', salesController.create);
 router.get('/', salesController.getAll);
 router.get('/summary', salesController.summary);
+router.get('/unverified', salesController.getUnverified);
 
 // ─── Sales Import (Excel / CSV) ─────────────────────────────
 //
@@ -70,5 +71,7 @@ router.post('/import/commit', salesImportController.commit);
 router.get('/:id', salesController.getById);
 router.put('/:id', salesController.update);
 router.delete('/:id', salesController.remove);
+router.post('/:id/verify', salesController.verify);
+router.post('/:id/reclassify', salesController.reclassify);
 
 export default router;

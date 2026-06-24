@@ -22,9 +22,13 @@
     "prisma:reset": "prisma migrate reset --force",
     "db:setup": "npm run prisma:generate && npm run prisma:migrate && npm run prisma:seed",
     "test:setup": "tsx src/test-setup.ts",
+    "test": "jest --config jest.config.ts",
+    "test:unit": "jest --config jest.config.ts tests/unit",
+    "test:integration": "jest --config jest.config.ts tests/integration --runInBand",
+    "test:e2e": "jest --config jest.config.ts tests/e2e --runInBand --forceExit --testTimeout=30000",
+    "typecheck": "tsc --noEmit",
     "lint": "eslint src --ext .ts",
-    "format": "prettier --write \"src/**/*.ts\"",
-    "test:e2e": "jest --config jest.config.ts --runInBand --forceExit --testTimeout=30000"
+    "format": "prettier --write \"src/**/*.ts\""
   },
   "prisma": {
     "seed": "tsx prisma/seed.ts"
@@ -41,7 +45,9 @@
   "dependencies": {
     "@aws-sdk/client-s3": "^3.1014.0",
     "@aws-sdk/s3-request-presigner": "^3.1014.0",
+    "@ngrok/ngrok": "^1.7.0",
     "@prisma/client": "^6.0.1",
+    "@sentry/node": "^10.57.0",
     "@supabase/supabase-js": "^2.100.1",
     "bcrypt": "^6.0.0",
     "cors": "^2.8.6",

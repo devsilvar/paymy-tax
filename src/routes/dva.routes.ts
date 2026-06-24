@@ -9,5 +9,8 @@ router.use(authenticate);
 router.post('/setup-virtual-account', dvaController.setupVirtualAccount);
 router.post('/validate-customer', dvaController.validateCustomer);
 router.get('/virtual-account', dvaController.getVirtualAccount);
+router.post('/requery', dvaController.requery);
+router.post('/settlement/resolve', dvaController.resolveSettlement);
+router.post('/settlement/connect', dvaController.connectSettlement);
 
 export default router;

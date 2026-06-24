@@ -57,10 +57,11 @@ services:
       # ---- CORS ----
       # Comma-separated list of allowed frontend origins.
       # e.g. https://app.paymytax.ng,https://www.paymytax.ng
+      # Set this in the Render dashboard to your deployed frontend URLs.
       - key: FRONTEND_URL
-        sync: false
+        value: "https://paymytax.vercel.app"
       - key: PUBLIC_API_URL
-        sync: false
+        value: "https://paymy-tax.onrender.com"
 
       # ---- Paystack ----
       - key: PAYSTACK_SECRET_KEY
