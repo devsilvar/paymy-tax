@@ -70,7 +70,7 @@ export async function calculateTax(
       _sum: { amount: true },
     }),
     prisma.expense.aggregate({
-      where: { businessId, expenseDate: dateFilter },
+      where: { businessId, expenseDate: dateFilter, isDeductible: true },
       _sum: { amount: true },
     }),
   ]);
@@ -308,11 +308,44 @@ export async function getDashboard(
   // reports (stored as previous-Dec-31 in UTC) and dashboard would show "no
   // report for current month" the second the user crosses a month boundary.
   const currentMonthStart = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1));
+  const currentMonthEnd = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() + 1, 0));
+  const currentDateFilter = { gte: currentMonthStart, lte: currentMonthEnd };
 
   // Current month report (may not exist yet)
   const currentReport = await prisma.monthlyTaxReport.findUnique({
     where: { businessId_taxMonth: { businessId, taxMonth: currentMonthStart } },
   });
+
+  // Live money figures. The dashboard reads REAL-TIME SalesTransaction/Expense
+  // rows (identical filters to calculateTax) instead of the stored
+  // MonthlyTaxReport snapshot — report rows only change on "Calculate Tax",
+  // so reading them here froze the dashboard until a recalculation. With live
+  // aggregates, adding a sale/expense (or marking an invoice paid, which
+  // creates a sale) reflects on the dashboard immediately.
+  const [liveSalesAgg, liveExpenseAgg, monthSalesAgg, monthExpenseAgg] =
+    await Promise.all([
+      prisma.salesTransaction.aggregate({
+        where: { businessId, status: 'confirmed', isTaxable: true },
+        _sum: { amount: true },
+      }),
+      prisma.expense.aggregate({
+        where: { businessId, isDeductible: true },
+        _sum: { amount: true },
+      }),
+      prisma.salesTransaction.aggregate({
+        where: { businessId, transactionDate: currentDateFilter, status: 'confirmed', isTaxable: true },
+        _sum: { amount: true },
+      }),
+      prisma.expense.aggregate({
+        where: { businessId, expenseDate: currentDateFilter, isDeductible: true },
+        _sum: { amount: true },
+      }),
+    ]);
+
+  const lifetimeSales = toNumber(liveSalesAgg._sum.amount);
+  const lifetimeExpenses = toNumber(liveExpenseAgg._sum.amount);
+  const monthSales = toNumber(monthSalesAgg._sum.amount);
+  const monthExpenses = toNumber(monthExpenseAgg._sum.amount);
 
   // Trends: last N months of reports
   const trendStart = new Date(
@@ -339,12 +372,61 @@ export async function getDashboard(
     },
   });
 
-  // Aggregate totals across all time for this business
+  // Lifetime tax payable + report count still come from reports — tax payable
+  // only exists once a report is calculated, and reportsCount is a report metric.
   const lifetime = await prisma.monthlyTaxReport.aggregate({
     where: { businessId },
-    _sum: { totalSales: true, totalExpenses: true, taxPayable: true },
+    _sum: { taxPayable: true },
     _count: true,
   });
+
+  // Current month card — live numbers, report fields where they matter:
+  //  - Locked (paid) months: the stored report is the audit record and live
+  //    rows can't change a locked month, so show it untouched.
+  //  - Report exists (draft/finalized, unpaid): live totals + the report's
+  //    rate/status, with taxPayable recomputed so the card stays consistent
+  //    with what "Calculate Tax" would produce right now.
+  //  - No report yet: build a live "draft preview" so the card lights up as
+  //    soon as data exists instead of demanding a calculation first.
+  let currentMonth = currentReport;
+  if (currentReport && !currentReport.isLocked) {
+    const grossProfit = Math.max(monthSales - monthExpenses, 0);
+    const rate = toNumber(currentReport.taxRate);
+    currentMonth = {
+      ...currentReport,
+      totalSales: new Decimal(monthSales),
+      totalExpenses: new Decimal(monthExpenses),
+      grossProfit: new Decimal(grossProfit),
+      taxPayable: new Decimal(grossProfit > 0 ? (grossProfit * rate) / 100 : 0),
+      profitMargin:
+        monthSales > 0
+          ? new Decimal(parseFloat(((grossProfit / monthSales) * 100).toFixed(2)))
+          : new Decimal(0),
+    };
+  } else if (!currentReport && (monthSales > 0 || monthExpenses > 0)) {
+    const grossProfit = Math.max(monthSales - monthExpenses, 0);
+    const rate = config.tax.defaultRate;
+    currentMonth = {
+      id: 'live-preview',
+      businessId,
+      taxMonth: currentMonthStart,
+      totalSales: new Decimal(monthSales),
+      totalExpenses: new Decimal(monthExpenses),
+      grossProfit: new Decimal(grossProfit),
+      taxRate: new Decimal(rate),
+      taxPayable: new Decimal(grossProfit > 0 ? (grossProfit * rate) / 100 : 0),
+      profitMargin:
+        monthSales > 0
+          ? new Decimal(parseFloat(((grossProfit / monthSales) * 100).toFixed(2)))
+          : new Decimal(0),
+      paymentStatus: 'pending',
+      isFinalized: false,
+      isLocked: false,
+      lockedAt: null,
+      createdAt: now,
+      updatedAt: now,
+    };
+  }
 
   // Unpaid finalized reports — these need attention
   const unpaidCount = await prisma.monthlyTaxReport.count({
@@ -363,11 +445,13 @@ export async function getDashboard(
   };
 
   return {
-    currentMonth: currentReport,
+    currentMonth,
     trends,
     lifetime: {
-      totalSales: toNumber(lifetime._sum.totalSales),
-      totalExpenses: toNumber(lifetime._sum.totalExpenses),
+      // Live totals — reflect every confirmed/taxable sale and deductible
+      // expense immediately, not just what the last tax calculation saw.
+      totalSales: lifetimeSales,
+      totalExpenses: lifetimeExpenses,
       totalTaxPayable: toNumber(lifetime._sum.taxPayable),
       reportsCount: lifetime._count,
     },

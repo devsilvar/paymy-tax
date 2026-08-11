@@ -137,6 +137,8 @@ async function main() {
     { amount: 75000, source: 'paycode', description: 'PayCode transaction', date: new Date('2026-03-15') },
     { amount: 180000, source: 'pos', description: 'POS sales - Week 3', date: new Date('2026-03-18') },
     { amount: 95000, source: 'manual', description: 'Cash sales', date: new Date('2026-03-20') },
+    { amount: 45000, source: 'cash', description: 'Walk-in cash payment', date: new Date('2026-03-22') },
+    { amount: 250000, source: 'invoice', description: 'Invoice INV-2026-042 - settled via bank transfer', date: new Date('2026-03-25') },
   ];
 
   for (const sale of salesData) {

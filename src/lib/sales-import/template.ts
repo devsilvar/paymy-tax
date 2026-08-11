@@ -16,7 +16,7 @@
 
 import ExcelJS from 'exceljs';
 
-const SOURCE_VALUES = ['bank_transfer', 'paycode', 'pos', 'online_store', 'manual'] as const;
+const SOURCE_VALUES = ['bank_transfer', 'paycode', 'pos', 'online_store', 'manual', 'cash', 'invoice'] as const;
 
 const HEADERS = [
   { key: 'transaction_date', label: 'transaction_date', width: 18 },

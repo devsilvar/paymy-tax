@@ -11,6 +11,7 @@ export const createExpenseSchema = z.object({
   amount: z.number().positive('Amount must be greater than 0'),
   expenseDate: z.coerce.date(),
   receiptUrl: z.string().url('Must be a valid URL').max(1000).trim().optional(),
+  isDeductible: z.boolean().optional().default(true),
 });
 
 export const updateExpenseSchema = z.object({
@@ -19,6 +20,7 @@ export const updateExpenseSchema = z.object({
   amount: z.number().positive('Amount must be greater than 0').optional(),
   expenseDate: z.coerce.date().optional(),
   receiptUrl: z.string().url('Must be a valid URL').max(1000).trim().nullable().optional(),
+  isDeductible: z.boolean().optional(),
 });
 
 export const expenseQuerySchema = z.object({

@@ -132,20 +132,22 @@ model SalesTransaction {
 
 /// Expenses - business expenditure tracking
 model Expense {
-  id          String          @id @default(uuid())
-  businessId  String          @map("business_id")
-  category    ExpenseCategory
-  description String
-  amount      Decimal         @db.Decimal(15, 2)
-  expenseDate DateTime        @map("expense_date") @db.Date
-  receiptUrl  String?         @map("receipt_url")
-  createdAt   DateTime        @default(now()) @map("created_at")
-  updatedAt   DateTime        @updatedAt @map("updated_at")
-  createdBy   String?         @map("created_by")
-  business    Business        @relation(fields: [businessId], references: [id], onDelete: Cascade)
+  id           String          @id @default(uuid())
+  businessId   String          @map("business_id")
+  category     ExpenseCategory
+  description  String
+  amount       Decimal         @db.Decimal(15, 2)
+  expenseDate  DateTime        @map("expense_date") @db.Date
+  receiptUrl   String?         @map("receipt_url")
+  isDeductible Boolean         @default(true) @map("is_deductible")
+  createdAt    DateTime        @default(now()) @map("created_at")
+  updatedAt    DateTime        @updatedAt @map("updated_at")
+  createdBy    String?         @map("created_by")
+  business     Business        @relation(fields: [businessId], references: [id], onDelete: Cascade)
 
   @@index([businessId, expenseDate(sort: Desc)])
   @@index([category])
+  @@index([businessId, isDeductible])
   @@map("expenses")
 }
 
@@ -403,6 +405,8 @@ enum SalesSource {
   pos
   online_store
   manual
+  cash
+  invoice
 }
 
 enum TransactionStatus {

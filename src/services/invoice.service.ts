@@ -81,24 +81,31 @@ function money(n: number): number {
   return Math.round(n * 100) / 100;
 }
 
-type SalesSourceType = 'bank_transfer' | 'paycode' | 'pos' | 'online_store' | 'manual';
+type SalesSourceType = 'bank_transfer' | 'paycode' | 'pos' | 'online_store' | 'manual' | 'cash' | 'invoice';
 
-/** Map the invoice payment method enum to a SalesTransaction source value so the
- *  linked sale reflects how the customer actually paid rather than hardcoding
- *  'manual' for everything. Falls back to 'manual' for methods without a direct
- *  SalesSource counterpart. */
+/** Map the invoice payment method enum to a SalesTransaction source value.
+ *  
+ *  Strategy: All invoice payments use source='invoice' (to distinguish invoiced
+ *  revenue from direct sales) EXCEPT cash payments which use source='cash' to
+ *  maintain consistent cash tracking across the system.
+ *  
+ *  The specific payment method (bank_transfer, pos, card, etc.) is still tracked
+ *  in the invoice.paymentMethod field. This creates clean reporting:
+ *  - 'invoice' source = all invoiced revenue regardless of payment channel
+ *  - 'cash' source = all cash transactions (direct sales + cash-paid invoices)
+ */
 function paymentMethodToSalesSource(method: InvoicePaymentMethod): SalesSourceType {
   const map: Record<InvoicePaymentMethod, SalesSourceType> = {
-    cash: 'manual',
-    bank_transfer: 'bank_transfer',
-    pos: 'pos',
-    card: 'manual',
-    mobile_money: 'manual',
-    cheque: 'manual',
-    online: 'online_store',
-    other: 'manual',
+    cash: 'cash',              // Cash payments tracked separately
+    bank_transfer: 'invoice',  // Invoice settlement via bank
+    pos: 'invoice',            // Invoice settlement via POS
+    card: 'invoice',           // Invoice settlement via card
+    mobile_money: 'invoice',   // Invoice settlement via mobile money
+    cheque: 'invoice',         // Invoice settlement via cheque
+    online: 'invoice',         // Invoice settlement via online payment
+    other: 'invoice',          // Invoice settlement via other method
   };
-  return map[method] ?? 'manual';
+  return map[method] ?? 'invoice';
 }
 
 /**

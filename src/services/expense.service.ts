@@ -83,6 +83,7 @@ export async function createExpense(
       amount: input.amount,
       expenseDate: input.expenseDate,
       receiptUrl: input.receiptUrl,
+      isDeductible: input.isDeductible ?? true,
       createdBy: userId,
     },
   });
@@ -93,7 +94,7 @@ export async function createExpense(
     action: 'expense.created',
     resourceType: 'expense',
     resourceId: expense.id,
-    newData: { amount: input.amount, category: input.category },
+    newData: { amount: input.amount, category: input.category, isDeductible: expense.isDeductible },
   }, tx);
 
   logger.info('Expense created', { expenseId: expense.id, businessId, userId });
@@ -202,6 +203,7 @@ export async function updateExpense(
   if (input.amount !== undefined) data.amount = input.amount;
   if (input.expenseDate !== undefined) data.expenseDate = input.expenseDate;
   if (input.receiptUrl !== undefined) data.receiptUrl = input.receiptUrl;
+  if (input.isDeductible !== undefined) data.isDeductible = input.isDeductible;
 
   const updated = await db.expense.update({
     where: { id: expenseId },
@@ -214,7 +216,7 @@ export async function updateExpense(
     action: 'expense.updated',
     resourceType: 'expense',
     resourceId: expenseId,
-    oldData: { amount: Number(existing.amount), category: existing.category },
+    oldData: { amount: Number(existing.amount), category: existing.category, isDeductible: existing.isDeductible },
     newData: input as Record<string, any>,
   }, tx);
 

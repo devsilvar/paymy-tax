@@ -239,8 +239,10 @@ const SOURCE_ALIASES: Record<string, SourceEnum> = {
   ecommerce: 'online_store',
   web: 'online_store',
   manual: 'manual',
-  cash: 'manual',
-  walkin: 'manual',
+  cash: 'cash',
+  walkin: 'cash',
+  invoice: 'invoice',
+  invoiced: 'invoice',
 };
 
 export function normalizeSource(value: unknown): SourceEnum | null {

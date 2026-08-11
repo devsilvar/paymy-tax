@@ -245,7 +245,7 @@ const options: swaggerJsdoc.Options = {
         // ─── Sales ───────────────────────────────────────────
         SalesSource: {
           type: 'string',
-          enum: ['bank_transfer', 'paycode', 'pos', 'online_store', 'manual'],
+          enum: ['bank_transfer', 'paycode', 'pos', 'online_store', 'manual', 'cash', 'invoice'],
         },
         TransactionStatus: {
           type: 'string',
