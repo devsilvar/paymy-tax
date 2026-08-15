@@ -45,6 +45,7 @@ export interface BankDto {
   active: boolean;
 }
 
+
 function toDto(row: {
   id: string;
   code: string;

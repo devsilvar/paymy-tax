@@ -213,11 +213,18 @@ export async function processWebhook(signature: string, rawBody: string) {
     });
 
     if (duplicate) {
+      // A duplicate signature means Paystack redelivered an event we already
+      // received — same raw body hashes to the same HMAC every time. That's
+      // normal retry behavior (e.g. our 200 response got lost), not a forged
+      // replay. Acknowledge it as already-handled (200) instead of rejecting
+      // it (401): rejecting tells Paystack the delivery failed, so they retry
+      // again, hit this same check, get rejected again, and repeat up to 25
+      // times over 2 weeks without ever recording a successful delivery.
       await prisma.paystackWebhookEvent.update({
         where: { id: webhookEvent.id },
-        data: { status: 'failed', error: 'Duplicate signature (replay attack)', processedAt: new Date() },
+        data: { status: 'processed', error: 'Duplicate delivery — already handled', processedAt: new Date() },
       });
-      throw new AppError(401, 'Duplicate webhook signature detected', 'REPLAY_ATTACK');
+      return;
     }
 
     // Verify HMAC-SHA512 signature

@@ -529,8 +529,14 @@ export async function processDVATransferWebhook(event: any) {
   // Only handle dedicated_nuban transfers
   if (channel !== 'dedicated_nuban') return false;
 
-  // Find the virtual account number from the transaction
+  // Find the virtual account number from the transaction.
+  // `authorization.receiver_bank_account_number` is the field real Paystack
+  // charge.success payloads use for DVA transfers — checked first. The other
+  // two are kept as fallbacks in case Paystack's shape varies, but this order
+  // has NOT been confirmed against a live payload yet. First thing to do:
+  // log one real test-mode transfer's raw body and confirm which path hits.
   const accountNumber =
+    data.authorization?.receiver_bank_account_number ||
     data.dedicated_account?.account_number ||
     data.metadata?.receiver_account_number;
 
