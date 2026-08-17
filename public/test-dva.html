@@ -1,0 +1,501 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>DVA Testing Dashboard</title>
+  <style>
+    * {
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
+    }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+      min-height: 100vh;
+      padding: 20px;
+    }
+
+    .container {
+      max-width: 1200px;
+      margin: 0 auto;
+    }
+
+    .header {
+      background: white;
+      padding: 30px;
+      border-radius: 12px;
+      margin-bottom: 20px;
+      box-shadow: 0 4px 6px rgba(0,0,0,0.1);
+    }
+
+    h1 {
+      color: #1a202c;
+      margin-bottom: 10px;
+    }
+
+    .subtitle {
+      color: #718096;
+      font-size: 14px;
+    }
+
+    .card {
+      background: white;
+      padding: 25px;
+      border-radius: 12px;
+      margin-bottom: 20px;
+      box-shadow: 0 4px 6px rgba(0,0,0,0.1);
+    }
+
+    .card h2 {
+      color: #2d3748;
+      margin-bottom: 15px;
+      font-size: 18px;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+
+    .input-group {
+      margin-bottom: 15px;
+    }
+
+    label {
+      display: block;
+      margin-bottom: 5px;
+      color: #4a5568;
+      font-size: 14px;
+      font-weight: 500;
+    }
+
+    input {
+      width: 100%;
+      padding: 10px 12px;
+      border: 2px solid #e2e8f0;
+      border-radius: 6px;
+      font-size: 14px;
+      transition: border-color 0.2s;
+    }
+
+    input:focus {
+      outline: none;
+      border-color: #667eea;
+    }
+
+    button {
+      background: #667eea;
+      color: white;
+      border: none;
+      padding: 12px 24px;
+      border-radius: 6px;
+      font-size: 14px;
+      font-weight: 600;
+      cursor: pointer;
+      transition: all 0.2s;
+      margin-right: 10px;
+      margin-bottom: 10px;
+    }
+
+    button:hover {
+      background: #5a67d8;
+      transform: translateY(-1px);
+      box-shadow: 0 4px 8px rgba(102, 126, 234, 0.3);
+    }
+
+    button:disabled {
+      background: #cbd5e0;
+      cursor: not-allowed;
+      transform: none;
+    }
+
+    button.secondary {
+      background: #48bb78;
+    }
+
+    button.secondary:hover {
+      background: #38a169;
+    }
+
+    .result-box {
+      background: #f7fafc;
+      border: 1px solid #e2e8f0;
+      border-radius: 6px;
+      padding: 15px;
+      margin-top: 15px;
+      max-height: 400px;
+      overflow-y: auto;
+      font-family: 'Courier New', monospace;
+      font-size: 13px;
+      line-height: 1.6;
+    }
+
+    .result-box pre {
+      white-space: pre-wrap;
+      word-wrap: break-word;
+    }
+
+    .status {
+      display: inline-block;
+      padding: 4px 10px;
+      border-radius: 4px;
+      font-size: 12px;
+      font-weight: 600;
+    }
+
+    .status.success {
+      background: #c6f6d5;
+      color: #22543d;
+    }
+
+    .status.pending {
+      background: #feebc8;
+      color: #7c2d12;
+    }
+
+    .status.error {
+      background: #fed7d7;
+      color: #742a2a;
+    }
+
+    .transaction-card {
+      background: #f7fafc;
+      padding: 15px;
+      border-radius: 8px;
+      margin-bottom: 10px;
+      border-left: 4px solid #667eea;
+    }
+
+    .transaction-card h3 {
+      font-size: 16px;
+      margin-bottom: 8px;
+      color: #2d3748;
+    }
+
+    .transaction-info {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+      gap: 10px;
+      font-size: 13px;
+      color: #4a5568;
+    }
+
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+      gap: 20px;
+    }
+
+    .loading {
+      display: inline-block;
+      width: 16px;
+      height: 16px;
+      border: 3px solid #f3f3f3;
+      border-top: 3px solid #667eea;
+      border-radius: 50%;
+      animation: spin 1s linear infinite;
+      margin-left: 10px;
+    }
+
+    @keyframes spin {
+      0% { transform: rotate(0deg); }
+      100% { transform: rotate(360deg); }
+    }
+
+    .alert {
+      padding: 12px;
+      border-radius: 6px;
+      margin-bottom: 15px;
+      font-size: 14px;
+    }
+
+    .alert.info {
+      background: #bee3f8;
+      color: #2c5282;
+      border-left: 4px solid #3182ce;
+    }
+
+    .alert.warning {
+      background: #feebc8;
+      color: #7c2d12;
+      border-left: 4px solid #dd6b20;
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <div class="header">
+      <h1>🧪 DVA Testing Dashboard</h1>
+      <p class="subtitle">Test your Dedicated Virtual Account and transaction APIs</p>
+    </div>
+
+    <div class="card">
+      <h2>⚙️ Configuration</h2>
+      <div class="input-group">
+        <label for="apiBase">API Base URL</label>
+        <input type="text" id="apiBase" value="https://paymy-tax.onrender.com/api/v1" placeholder="https://paymy-tax.onrender.com/api/v1">
+      </div>
+      <div class="input-group">
+        <label for="businessId">Business ID</label>
+        <input type="text" id="businessId" value="0ca4c440-5358-4ac6-923c-71317014baf7" placeholder="Enter your business ID">
+      </div>
+      <div class="input-group">
+        <label for="authToken">Auth Token (Bearer)</label>
+        <input type="password" id="authToken" placeholder="Paste your auth token here">
+      </div>
+      <button onclick="loadFromStorage()">Load Token from LocalStorage</button>
+      <button onclick="saveConfig()" class="secondary">Save Config</button>
+    </div>
+
+    <div class="grid">
+      <div class="card">
+        <h2>🏦 Virtual Account</h2>
+        <button onclick="getVirtualAccount()">Get DVA Details</button>
+        <button onclick="requeryDVA()" class="secondary">Requery DVA</button>
+        <div id="dvaResult" class="result-box" style="display: none;"></div>
+      </div>
+
+      <div class="card">
+        <h2>📊 Transactions</h2>
+        <button onclick="getUnverified()">Get Unverified</button>
+        <button onclick="getAllSales()">Get All Sales</button>
+        <button onclick="getSummary()">Get Summary</button>
+        <div id="transactionResult" class="result-box" style="display: none;"></div>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>✅ Verify Transaction</h2>
+      <div class="input-group">
+        <label for="saleId">Sale ID</label>
+        <input type="text" id="saleId" placeholder="Enter transaction ID to verify">
+      </div>
+      <button onclick="verifySale()">Verify as Sale</button>
+      <div id="verifyResult" class="result-box" style="display: none;"></div>
+    </div>
+
+    <div class="card">
+      <h2>📝 Create Test Sale</h2>
+      <div class="input-group">
+        <label for="testAmount">Amount (₦)</label>
+        <input type="number" id="testAmount" value="1000" placeholder="1000">
+      </div>
+      <button onclick="createTestSale()">Create Manual Sale</button>
+      <div id="testSaleResult" class="result-box" style="display: none;"></div>
+    </div>
+
+    <div class="card">
+      <h2>🔬 Run Full Test Suite</h2>
+      <p style="margin-bottom: 15px; color: #4a5568; font-size: 14px;">
+        This will run all tests and display a comprehensive report.
+      </p>
+      <button onclick="runFullTest()">🚀 Run All Tests</button>
+      <div id="fullTestResult" class="result-box" style="display: none;"></div>
+    </div>
+  </div>
+
+  <script>
+    // Configuration
+    let config = {
+      apiBase: 'https://paymy-tax.onrender.com/api/v1',
+      businessId: '0ca4c440-5358-4ac6-923c-71317014baf7',
+      authToken: ''
+    };
+
+    // Load saved config
+    function loadConfig() {
+      const saved = localStorage.getItem('dvaTestConfig');
+      if (saved) {
+        config = JSON.parse(saved);
+        document.getElementById('apiBase').value = config.apiBase;
+        document.getElementById('businessId').value = config.businessId;
+        document.getElementById('authToken').value = config.authToken;
+      }
+    }
+
+    function saveConfig() {
+      config.apiBase = document.getElementById('apiBase').value;
+      config.businessId = document.getElementById('businessId').value;
+      config.authToken = document.getElementById('authToken').value;
+      localStorage.setItem('dvaTestConfig', JSON.stringify(config));
+      alert('✅ Configuration saved!');
+    }
+
+    function loadFromStorage() {
+      const token = localStorage.getItem('token') || 
+                    localStorage.getItem('authToken') ||
+                    localStorage.getItem('accessToken');
+      if (token) {
+        document.getElementById('authToken').value = token;
+        config.authToken = token;
+        alert('✅ Token loaded from localStorage!');
+      } else {
+        alert('❌ No token found in localStorage');
+      }
+    }
+
+    // API Helper
+    async function apiCall(endpoint, options = {}) {
+      saveConfig(); // Auto-save before each call
+      
+      if (!config.authToken) {
+        return { error: 'Please provide an auth token' };
+      }
+
+      const url = `${config.apiBase}${endpoint}`;
+      const headers = {
+        'Authorization': `Bearer ${config.authToken}`,
+        'Content-Type': 'application/json',
+        ...options.headers
+      };
+
+      try {
+        const response = await fetch(url, { ...options, headers });
+        const data = await response.json();
+        
+        return {
+          status: response.status,
+          ok: response.ok,
+          data: response.ok ? data : null,
+          error: !response.ok ? data : null
+        };
+      } catch (error) {
+        return { status: 0, ok: false, error: error.message };
+      }
+    }
+
+    function displayResult(elementId, data) {
+      const element = document.getElementById(elementId);
+      element.style.display = 'block';
+      element.innerHTML = `<pre>${JSON.stringify(data, null, 2)}</pre>`;
+    }
+
+    // API Functions
+    async function getVirtualAccount() {
+      const result = await apiCall(`/businesses/${config.businessId}/dva/virtual-account`);
+      displayResult('dvaResult', result);
+    }
+
+    async function requeryDVA() {
+      const result = await apiCall(`/businesses/${config.businessId}/dva/requery`, { method: 'POST' });
+      displayResult('dvaResult', result);
+    }
+
+    async function getUnverified() {
+      const result = await apiCall(`/businesses/${config.businessId}/sales/unverified`);
+      displayResult('transactionResult', result);
+    }
+
+    async function getAllSales() {
+      const result = await apiCall(`/businesses/${config.businessId}/sales?limit=20`);
+      displayResult('transactionResult', result);
+    }
+
+    async function getSummary() {
+      const now = new Date();
+      const month = now.getMonth() + 1;
+      const year = now.getFullYear();
+      const result = await apiCall(`/businesses/${config.businessId}/sales/summary?month=${month}&year=${year}`);
+      displayResult('transactionResult', result);
+    }
+
+    async function verifySale() {
+      const saleId = document.getElementById('saleId').value;
+      if (!saleId) {
+        alert('Please enter a sale ID');
+        return;
+      }
+      
+      const result = await apiCall(
+        `/businesses/${config.businessId}/sales/${saleId}/verify`,
+        {
+          method: 'POST',
+          body: JSON.stringify({ classification: 'sale' })
+        }
+      );
+      displayResult('verifyResult', result);
+    }
+
+    async function createTestSale() {
+      const amount = parseFloat(document.getElementById('testAmount').value);
+      
+      const result = await apiCall(
+        `/businesses/${config.businessId}/sales`,
+        {
+          method: 'POST',
+          body: JSON.stringify({
+            amount: amount,
+            source: 'manual',
+            status: 'confirmed',
+            customerName: 'Test Customer',
+            transactionDate: new Date().toISOString(),
+            description: 'Test transaction from dashboard'
+          })
+        }
+      );
+      displayResult('testSaleResult', result);
+    }
+
+    async function runFullTest() {
+      const resultDiv = document.getElementById('fullTestResult');
+      resultDiv.style.display = 'block';
+      resultDiv.innerHTML = '<p>🔄 Running tests...</p>';
+      
+      let report = '🧪 FULL TEST SUITE RESULTS\n\n';
+      
+      // Test 1: DVA
+      report += '━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n';
+      report += '📋 Test 1: Virtual Account\n';
+      report += '━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n';
+      const dva = await apiCall(`/businesses/${config.businessId}/dva/virtual-account`);
+      if (dva.ok && dva.data?.data?.accountNumber) {
+        report += `✅ DVA Active: ${dva.data.data.accountNumber} (${dva.data.data.bankName})\n\n`;
+      } else {
+        report += `❌ DVA not active\n\n`;
+      }
+      
+      // Test 2: Unverified
+      report += '━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n';
+      report += '📋 Test 2: Unverified Transactions\n';
+      report += '━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n';
+      const unverified = await apiCall(`/businesses/${config.businessId}/sales/unverified`);
+      if (unverified.ok && unverified.data?.data?.length > 0) {
+        report += `⚠️  Found ${unverified.data.data.length} unverified transaction(s)\n\n`;
+        unverified.data.data.slice(0, 3).forEach((sale, idx) => {
+          report += `${idx + 1}. ₦${sale.amount} - ${sale.customerName || 'Unknown'}\n`;
+          report += `   ID: ${sale.id}\n`;
+          report += `   Status: ${sale.status}\n\n`;
+        });
+      } else {
+        report += '✅ No unverified transactions\n\n';
+      }
+      
+      // Test 3: Summary
+      report += '━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n';
+      report += '📋 Test 3: Monthly Summary\n';
+      report += '━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n';
+      const now = new Date();
+      const month = now.getMonth() + 1;
+      const year = now.getFullYear();
+      const summary = await apiCall(`/businesses/${config.businessId}/sales/summary?month=${month}&year=${year}`);
+      if (summary.ok && summary.data?.data) {
+        report += `Month: ${year}-${month.toString().padStart(2, '0')}\n`;
+        report += `Total Sales: ₦${summary.data.data.totalSales?.toFixed(2) || '0.00'}\n`;
+        report += `Transactions: ${summary.data.data.transactionCount || 0}\n\n`;
+      } else {
+        report += '❌ Failed to fetch summary\n\n';
+      }
+      
+      report += '━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n';
+      report += '✅ TEST SUITE COMPLETE\n';
+      report += '━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n';
+      
+      resultDiv.innerHTML = `<pre>${report}</pre>`;
+    }
+
+    // Load config on page load
+    loadConfig();
+  </script>
+</body>
+</html>

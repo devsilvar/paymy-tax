@@ -41,9 +41,18 @@ export interface CreateDVAResult {
   bankId: number;
 }
 
+// Paystack's real `GET /dedicated_account/requery` response is just a status
+// message ("We are checking the status of your transfer...") — it does NOT
+// return a transactions array. It triggers an async background check on
+// Paystack's side; any missed transfer it finds arrives later via a normal
+// charge.success webhook, exactly like a live transfer. Verified against
+// https://paystack.com/docs/payments/dedicated-virtual-accounts/#requery-a-customers-dedicated-virtual-account
+// A previous version of this type had a `transactions: any[]` field that
+// could never be populated (Paystack never sends it) — removed rather than
+// left as permanently-dead, misleading data.
 export interface RequeryDVAResult {
   accountNumber: string;
-  transactions: any[];
+  message: string;
 }
 
 // ─── Subaccount & Settlement Types ─────────────────

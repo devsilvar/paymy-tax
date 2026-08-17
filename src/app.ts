@@ -93,6 +93,16 @@ export const createApp = (): Application => {
   // =================================
   app.use('/api', routes);
 
+  // =================================
+  // STATIC FILES (for test dashboard)
+  // =================================
+  if (!config.app.isProduction || process.env.ENABLE_TEST_DASHBOARD === 'true') {
+    const path = require('path');
+    const publicPath = path.join(__dirname, '..', 'public');
+    app.use('/test', express.static(publicPath));
+    logger.info('📁 Static files served from /test');
+  }
+
   // Root endpoint
   app.get('/', (req, res) => {
     res.status(200).json({
