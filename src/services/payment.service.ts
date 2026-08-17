@@ -101,45 +101,109 @@ export async function initiatePayment(
     throw new AppError(400, 'No tax payable for this report', 'ZERO_TAX');
   }
 
-  // Idempotency: if an open pending payment already exists for this report,
-  // reuse it instead of spawning a second Paystack transaction. Guards against
-  // double-clicks, refreshes, back-button, and multiple tabs — without
-  // requiring the client to send an idempotency key. Paystack's
-  // /transaction/initialize is itself idempotent on `reference`, so
+  // Idempotency: if an open pending or failed payment already exists for this
+  // report, reuse it instead of spawning a second Paystack transaction. This
+  // guards against double-clicks, refreshes, back-button, multiple tabs, and
+  // most importantly: abandoned payments where the user cancelled on Paystack's
+  // page and then tried again. Without this, the unique constraint on
+  // transactionReference would cause a duplicate error on retry.
+  //
+  // Paystack's /transaction/initialize is itself idempotent on `reference`, so
   // re-initializing the same reference returns the same checkout session.
-  // A stale pending whose amount no longer matches the report (sales/expenses
-  // edited between attempts) is abandoned and replaced so the SME is never
-  // sent to pay the wrong figure.
-  const existingPending = await prisma.taxPayment.findFirst({
-    where: { taxReportId, paymentStatus: 'pending' },
+  //
+  // A stale pending/failed payment whose amount no longer matches the report
+  // (sales/expenses edited between attempts) is marked as abandoned and
+  // replaced so the SME is never sent to pay the wrong figure.
+  const existingPayment = await prisma.taxPayment.findFirst({
+    where: { 
+      taxReportId, 
+      paymentStatus: { in: ['pending', 'failed'] }
+    },
     orderBy: { createdAt: 'desc' },
   });
 
-  let payment = existingPending;
+  let payment = existingPayment;
 
-  if (existingPending && Number(existingPending.amountPaid) !== amount) {
+  // If amount changed, abandon old payment and create new one
+  if (existingPayment && Number(existingPayment.amountPaid) !== amount) {
     await prisma.taxPayment.update({
-      where: { id: existingPending.id },
-      data: { paymentStatus: 'failed', gatewayResponse: { abandoned: 'amount_changed' } },
+      where: { id: existingPayment.id },
+      data: { 
+        paymentStatus: 'failed', 
+        gatewayResponse: { abandoned: 'amount_changed', oldAmount: Number(existingPayment.amountPaid), newAmount: amount } 
+      },
     });
     payment = null;
   }
 
+  // If payment is too old (>1 hour), mark as abandoned and create fresh one
+  // This prevents reusing stale sessions from days ago
+  if (existingPayment && !payment && existingPayment.createdAt) {
+    const ageMinutes = (Date.now() - existingPayment.createdAt.getTime()) / (1000 * 60);
+    if (ageMinutes > 60) {
+      await prisma.taxPayment.update({
+        where: { id: existingPayment.id },
+        data: { 
+          paymentStatus: 'failed', 
+          gatewayResponse: { abandoned: 'expired', ageMinutes: Math.round(ageMinutes) } 
+        },
+      });
+      payment = null;
+    }
+  }
+
   if (!payment) {
-    // Generate unique reference
+    // Generate unique reference with timestamp and random bytes
     const reference = `PMT-${businessId.slice(0, 8)}-${Date.now()}-${crypto.randomBytes(4).toString('hex')}`;
 
-    // Create pending payment record
-    payment = await prisma.taxPayment.create({
-      data: {
-        businessId,
-        taxReportId,
-        amountPaid: amount,
-        paymentMethod: 'card',
-        transactionReference: reference,
-        paymentStatus: 'pending',
-      },
-    });
+    // Wrap in try-catch to handle potential duplicate reference edge case
+    try {
+      payment = await prisma.taxPayment.create({
+        data: {
+          businessId,
+          taxReportId,
+          amountPaid: amount,
+          paymentMethod: 'card',
+          transactionReference: reference,
+          paymentStatus: 'pending',
+        },
+      });
+    } catch (error: any) {
+      // If we hit a unique constraint error (extremely rare), mark all old
+      // pending/failed payments for this report as abandoned and retry once
+      if (error.code === 'P2002' && error.meta?.target?.includes('transaction_reference')) {
+        logger.warn('Duplicate transaction reference collision, cleaning up old payments', {
+          taxReportId,
+          reference,
+        });
+
+        await prisma.taxPayment.updateMany({
+          where: { 
+            taxReportId, 
+            paymentStatus: { in: ['pending', 'failed'] } 
+          },
+          data: { 
+            paymentStatus: 'failed', 
+            gatewayResponse: { abandoned: 'duplicate_cleanup' } 
+          },
+        });
+
+        // Generate new reference and retry
+        const newReference = `PMT-${businessId.slice(0, 8)}-${Date.now()}-${crypto.randomBytes(4).toString('hex')}`;
+        payment = await prisma.taxPayment.create({
+          data: {
+            businessId,
+            taxReportId,
+            amountPaid: amount,
+            paymentMethod: 'card',
+            transactionReference: newReference,
+            paymentStatus: 'pending',
+          },
+        });
+      } else {
+        throw error;
+      }
+    }
   }
 
   const reference = payment.transactionReference;

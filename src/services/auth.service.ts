@@ -282,20 +282,65 @@ export async function forgotPassword(email: string) {
   });
 
   // Build the reset link
-  const resetLink = `${config.cors.frontendUrl}/reset-password?token=${rawToken}`;
+  // Use only the first frontend URL (for dev it's localhost:5173)
+  const frontendUrl = config.cors.frontendUrl.split(',')[0].trim();
+  const resetLink = `${frontendUrl}/reset-password?token=${rawToken}`;
 
-  // ===== DUMMY EMAIL — replace with Resend / your email service =====
-  logger.info('PASSWORD RESET EMAIL (dummy)', {
-    to: user.email,
-    subject: 'Reset your PayMyTax password',
-    linkLength: resetLink.length,
-    expiresInMinutes: RESET_TOKEN_EXPIRY_MINUTES,
-  });
-  // ==================================================================
+  // Send password reset email using professional templates
+  const { sendEmail } = await import('@/lib/email');
+  const { 
+    generatePasswordResetHtml, 
+    generatePasswordResetText 
+  } = await import('@/lib/email/templates/password-reset');
 
-  logger.info('Password reset requested', { userId: user.id, email });
+  let emailDelivered = false;
+  let resetLinkForDev: string | undefined;
 
-  return { message: 'If an account with that email exists, a password reset link has been sent.' };
+  try {
+    const emailResult = await sendEmail({
+      to: user.email,
+      subject: 'Reset Your PayMyTax Password',
+      html: generatePasswordResetHtml({
+        resetLink,
+        expiryMinutes: RESET_TOKEN_EXPIRY_MINUTES,
+        userEmail: user.email,
+      }),
+      text: generatePasswordResetText({
+        resetLink,
+        expiryMinutes: RESET_TOKEN_EXPIRY_MINUTES,
+        userEmail: user.email,
+      }),
+    });
+
+    emailDelivered = emailResult.delivered;
+
+    logger.info('Password reset email sent', { 
+      userId: user.id, 
+      email,
+      delivered: emailResult.delivered,
+      messageId: emailResult.id,
+    });
+  } catch (emailError) {
+    // Log but don't throw — we don't want to reveal whether email sending
+    // succeeded (anti-enumeration). The token is already in the DB, so if
+    // email fails, support can manually look up the token hash and help the user.
+    logger.error('Password reset email failed to send', {
+      userId: user.id,
+      email,
+      error: emailError instanceof Error ? emailError.message : String(emailError),
+    });
+  }
+
+  // In development, if email wasn't delivered, return the reset link so frontend can display it
+  // This allows testing without email service configuration
+  if (config.app.isDevelopment && !emailDelivered) {
+    resetLinkForDev = resetLink;
+  }
+
+  return { 
+    message: 'If an account with that email exists, a password reset link has been sent.',
+    resetLink: resetLinkForDev, // Only populated in dev when email fails
+  };
 }
 
 export async function resetPassword(token: string, newPassword: string) {

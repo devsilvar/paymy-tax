@@ -1,5 +1,5 @@
 import { Router } from 'express';
-import { authRateLimiter } from '@/middleware/security';
+import { authRateLimiter, passwordResetRateLimiter } from '@/middleware/security';
 import { authenticate } from '@/middleware/auth';
 import * as authController from '@/controllers/auth.controller';
 
@@ -12,7 +12,8 @@ router.post('/refresh', authController.refreshToken);
 router.get('/me', authenticate, authController.getMe);
 router.patch('/me', authenticate, authController.updateMe);
 router.put('/change-password', authenticate, authController.changePassword);
-router.post('/forgot-password', authRateLimiter, authController.forgotPassword);
-router.post('/reset-password', authRateLimiter, authController.resetPassword);
+// Dedicated stricter rate limiter for password reset to prevent abuse
+router.post('/forgot-password', passwordResetRateLimiter, authController.forgotPassword);
+router.post('/reset-password', passwordResetRateLimiter, authController.resetPassword);
 
 export default router;

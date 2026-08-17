@@ -13,7 +13,11 @@ model User {
   email               String     @unique
   passwordHash        String     @map("password_hash")
   phone               String?    @unique
-  bvn                 String?    @map("bvn") @db.VarChar(11)
+  // VarChar(12) — real Nigerian BVNs are 11 digits, but Paystack's official
+  // documented test-mode identity-validation fixture is a 12-digit value
+  // ("222222222221"). Widened so the sandbox credential can actually be
+  // stored; see check_bvn_length in migration 20260817120000_add_dva_failure_tracking.
+  bvn                 String?    @map("bvn") @db.VarChar(12)
   nin                 String?    @map("nin") @db.VarChar(11)
   bvnVerifiedAt       DateTime?  @map("bvn_verified_at")
   ninVerifiedAt       DateTime?  @map("nin_verified_at")
@@ -57,6 +61,13 @@ model Business {
   settlementAccountName   String?   @map("settlement_account_name")
   platformCommissionPct   Decimal   @default(0.00) @map("platform_commission_pct") @db.Decimal(5, 2)
   settlementConnectedAt   DateTime? @map("settlement_connected_at")
+  // Set when Paystack sends `customeridentification.failed` or
+  // `dedicatedaccount.assign.failed`. Lets the frontend stop polling
+  // immediately with an actionable reason instead of spinning until a
+  // client-side timeout. Cleared automatically on the next successful
+  // validation/assignment attempt.
+  dvaFailureReason        String?   @map("dva_failure_reason")
+  dvaFailedAt             DateTime? @map("dva_failed_at")
   createdAt               DateTime  @default(now()) @map("created_at")
   updatedAt               DateTime  @updatedAt @map("updated_at")
   merchantId              String    @unique @map("merchant_id")

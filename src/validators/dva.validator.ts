@@ -21,10 +21,15 @@ import { z } from 'zod';
  * Paystack and can relax this then.
  */
 export const validateCustomerSchema = z.object({
+  // Real Nigerian BVNs are 11 digits. Paystack's OWN documented test-mode
+  // fixture ("222222222221") is 12 digits
+  // (https://paystack.com/docs/identity-verification/validate-customer/) —
+  // rejecting it here made it impossible to ever exercise the officially
+  // documented test-mode success path.
   bvn: z
     .string()
     .trim()
-    .regex(/^\d{11}$/, 'BVN must be exactly 11 digits'),
+    .regex(/^\d{11,12}$/, 'BVN must be 11 or 12 digits'),
   nin: z
     .string()
     .trim()

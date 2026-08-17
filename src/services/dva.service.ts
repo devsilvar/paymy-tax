@@ -90,6 +90,14 @@ export async function validateCustomer(
     },
   });
 
+  // A new attempt is now in flight with Paystack — clear any stale failure
+  // from a previous attempt so the UI doesn't show a leftover error while
+  // this submission is being processed.
+  await prisma.business.update({
+    where: { id: businessId },
+    data: { dvaFailureReason: null, dvaFailedAt: null },
+  });
+
   logAudit({
     userId,
     businessId,
@@ -262,6 +270,8 @@ export async function setupVirtualAccount(userId: string, businessId: string) {
       data: {
         virtualAccountNumber: dva.accountNumber,
         virtualAccountBank: dva.bankName,
+        dvaFailureReason: null,
+        dvaFailedAt: null,
       },
     });
 
@@ -314,6 +324,20 @@ export async function getVirtualAccount(userId: string, businessId: string) {
     };
   }
 
+  // Surfaces a `customeridentification.failed` / `dedicatedaccount.assign.failed`
+  // webhook that landed since the last check. Without this, the frontend's
+  // poll only ever sees 'none' — identical to "never started" — and has no
+  // way to distinguish "still processing" from "already failed", so it just
+  // spins until its own client-side timeout regardless of what actually
+  // happened on Paystack's side.
+  if (business.dvaFailureReason) {
+    return {
+      status: 'failed',
+      message: business.dvaFailureReason,
+      failedAt: business.dvaFailedAt,
+    };
+  }
+
   return {
     status: 'none',
     message: 'No virtual account set up for this business.',
@@ -351,6 +375,8 @@ export async function processDVAAssignmentWebhook(event: any) {
       data: {
         virtualAccountNumber: accountNumber,
         virtualAccountBank: bankName || 'Wema Bank',
+        dvaFailureReason: null,
+        dvaFailedAt: null,
       },
     });
 
@@ -367,13 +393,31 @@ export async function processDVAAssignmentWebhook(event: any) {
 
   if (eventType === 'dedicatedaccount.assign.failed') {
     const customerCode = data.customer?.customer_code;
+    const reason = data.message || 'Dedicated account assignment failed';
 
     logger.error('DVA assignment failed', { customerCode, data });
 
+    // Previously this branch never looked up the business, so the failure
+    // was only ever visible in logs/audit — never surfaced to the SME via
+    // GET /dva/virtual-account. Mirrors the success branch's lookup so the
+    // frontend poll can stop spinning and show the real reason.
+    const business = customerCode
+      ? await prisma.business.findFirst({ where: { paystackCustomerCode: customerCode } })
+      : null;
+
+    if (business) {
+      await prisma.business.update({
+        where: { id: business.id },
+        data: { dvaFailureReason: reason, dvaFailedAt: new Date() },
+      });
+    }
+
     logAudit({
+      businessId: business?.id,
       action: 'dva.failed',
       resourceType: 'business',
-      newData: { customerCode, reason: data.message || 'Unknown' },
+      resourceId: business?.id,
+      newData: { customerCode, reason },
     });
   }
 }
@@ -426,6 +470,13 @@ export async function processCustomerIdentificationWebhook(event: any) {
       newData: { customerCode },
     });
 
+    // Identification succeeded — clear any prior failure record so a stale
+    // reason from an earlier attempt doesn't linger on the business row.
+    await prisma.business.update({
+      where: { id: business.id },
+      data: { dvaFailureReason: null, dvaFailedAt: null },
+    });
+
     // Already has a DVA — nothing to do (a re-validation or replayed webhook).
     if (business.virtualAccountNumber) {
       logger.info('Identification success but DVA already assigned — skipping', {
@@ -454,6 +505,8 @@ export async function processCustomerIdentificationWebhook(event: any) {
           data: {
             virtualAccountNumber: dva.accountNumber,
             virtualAccountBank: dva.bankName,
+            dvaFailureReason: null,
+            dvaFailedAt: null,
           },
         });
 
@@ -489,6 +542,13 @@ export async function processCustomerIdentificationWebhook(event: any) {
     const reason = data.reason || data.message || 'Identity verification failed';
 
     logger.error('Customer identification failed', { businessId: business.id, customerCode, reason });
+
+    // Persist so GET /dva/virtual-account can report `status: 'failed'` with
+    // the reason instead of the frontend polling forever with no signal.
+    await prisma.business.update({
+      where: { id: business.id },
+      data: { dvaFailureReason: reason, dvaFailedAt: new Date() },
+    });
 
     logAudit({
       businessId: business.id,

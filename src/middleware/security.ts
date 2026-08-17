@@ -126,3 +126,28 @@ export const paymentRateLimiter = rateLimit({
     },
   },
 });
+
+/**
+ * Strict rate limiter for password reset endpoints
+ * 
+ * More restrictive than general auth limiter to prevent:
+ * - Email bombing attacks
+ * - User enumeration attempts
+ * - Resource exhaustion via email sending
+ * 
+ * Enterprise best practice: 3-5 attempts per hour per IP
+ * Development: Higher limit for testing (10 per 15 minutes)
+ */
+export const passwordResetRateLimiter = rateLimit({
+  windowMs: config.app.isDevelopment ? 15 * 60 * 1000 : 60 * 60 * 1000, // 15 min (dev) / 1 hour (prod)
+  max: config.app.isDevelopment ? 10 : 3, // 10 attempts (dev) / 3 attempts (prod)
+  skipSuccessfulRequests: false, // Count all requests to prevent enumeration
+  message: {
+    error: {
+      code: 'PASSWORD_RESET_RATE_LIMIT_EXCEEDED',
+      message: 'Too many password reset attempts. Please try again in 1 hour.',
+    },
+  },
+  standardHeaders: true,
+  legacyHeaders: false,
+});

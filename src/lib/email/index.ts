@@ -71,6 +71,20 @@ export async function sendEmail(input: SendEmailInput): Promise<SendEmailResult>
   });
 
   if (error) {
+    // Special handling for domain verification errors
+    if (error.message?.includes('domain is not verified')) {
+      logger.warn('Resend domain not verified - email logged for dev', {
+        to: input.to,
+        subject: input.subject,
+        htmlPreview: input.html.slice(0, 200),
+        note: 'Add and verify your domain at https://resend.com/domains',
+      });
+      // In dev, treat domain verification errors as non-critical (log but continue)
+      if (config.app.isDevelopment) {
+        return { delivered: false };
+      }
+    }
+    
     logger.error('Resend send failed', { to: input.to, subject: input.subject, error });
     throw new Error(`Email provider error: ${error.message || 'unknown'}`);
   }
