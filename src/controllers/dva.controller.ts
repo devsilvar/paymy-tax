@@ -54,6 +54,18 @@ export const getVirtualAccount = asyncHandler(async (req: AuthenticatedRequest, 
   });
 });
 
+export const getBalance = asyncHandler(async (req: AuthenticatedRequest, res: Response) => {
+  const result = await dvaService.getDVABalance(
+    req.user!.userId,
+    req.params.businessId
+  );
+
+  res.status(200).json({
+    success: true,
+    data: result,
+  });
+});
+
 
 
 export const requery = asyncHandler(async (req: AuthenticatedRequest, res: Response) => {

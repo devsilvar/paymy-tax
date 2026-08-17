@@ -344,6 +344,77 @@ export async function getVirtualAccount(userId: string, businessId: string) {
   };
 }
 
+// ─── Get DVA Balance / Transaction Summary ──────────────────
+//
+// IMPORTANT: this is NOT a live query against Paystack. Paystack does not
+// expose a running balance for a specific dedicated account — a transfer
+// either has already generated a charge.success (and therefore a row in
+// our own SalesTransaction table via processDVATransferWebhook), or it
+// hasn't happened yet. There is nothing else to ask Paystack for. This
+// endpoint summarizes OUR OWN records, which is the only "balance" that
+// actually exists for a DVA under split-settlement.
+//
+// Two totals on purpose: `confirmed` only counts sales a human has verified
+// (see POST /sales/:id/verify) and is what feeds tax calculations. Every
+// DVA transfer lands in `pendingVerification` first — see the explicit
+// `status: 'pending', needsVerification: true` inside the
+// prisma.salesTransaction.create() call in processDVATransferWebhook below.
+// A transaction sitting only in pendingVerification is real money that has
+// already settled to the business's bank — it just hasn't been confirmed
+// as taxable revenue yet.
+
+export async function getDVABalance(userId: string, businessId: string) {
+  const business = await verifyBusinessOwnership(userId, businessId);
+
+  // Scoped to DVA-originated transactions specifically — source alone
+  // ('bank_transfer') would also catch manually-logged bank transfer sales
+  // that a user entered by hand via POST /sales, which aren't DVA money.
+  const dvaFilter = {
+    businessId: business.id,
+    source: 'bank_transfer' as const,
+    metadata: { path: ['channel'], equals: 'dva' },
+  };
+
+  const [confirmed, pending, lastTransaction] = await Promise.all([
+    prisma.salesTransaction.aggregate({
+      where: { ...dvaFilter, status: 'confirmed' },
+      _sum: { amount: true },
+      _count: true,
+    }),
+    prisma.salesTransaction.aggregate({
+      where: { ...dvaFilter, needsVerification: true },
+      _sum: { amount: true },
+      _count: true,
+    }),
+    prisma.salesTransaction.findFirst({
+      where: dvaFilter,
+      orderBy: { transactionDate: 'desc' },
+      select: { amount: true, transactionDate: true, status: true },
+    }),
+  ]);
+
+  return {
+    accountNumber: business.virtualAccountNumber,
+    accountStatus: business.virtualAccountNumber ? 'active' : 'none',
+    confirmed: {
+      total: confirmed._sum.amount ?? 0,
+      count: confirmed._count,
+    },
+    pendingVerification: {
+      total: pending._sum.amount ?? 0,
+      count: pending._count,
+    },
+    lastTransaction: lastTransaction
+      ? {
+          amount: lastTransaction.amount,
+          date: lastTransaction.transactionDate,
+          status: lastTransaction.status,
+        }
+      : null,
+    note: 'confirmed = verified sales that count toward tax. pendingVerification = money already received via the DVA but awaiting confirmation at POST /sales/:id/verify. This is computed from our own records, not a live Paystack balance check.',
+  };
+}
+
 // ─── Process DVA Assignment Webhook ─────────────────────────
 
 export async function processDVAAssignmentWebhook(event: any) {
@@ -740,6 +811,7 @@ export async function requeryDVA(userId: string, businessId: string) {
     resourceId: businessId,
     newData: { transactionCount: result.transactions.length },
   });
+  // ...
 
   logger.info('DVA requeried', { businessId, userId, transactionCount: result.transactions.length });
 
