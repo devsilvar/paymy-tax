@@ -153,6 +153,86 @@ export async function toggleUserStatus(userId: string, isActive: boolean, adminI
   return updated;
 }
 
+export async function verifyUserEmail(userId: string, adminId?: string, tx?: TxClient) {
+  const db = tx ?? prisma;
+
+  const user = await db.user.findUnique({ where: { id: userId } });
+
+  if (!user) {
+    throw new AppError(404, 'User not found', 'USER_NOT_FOUND');
+  }
+
+  if (user.isVerified) {
+    // Already verified - return current state (idempotent)
+    return {
+      id: user.id,
+      email: user.email,
+      isVerified: true,
+    };
+  }
+
+  const updated = await db.user.update({
+    where: { id: userId },
+    data: { isVerified: true },
+    select: {
+      id: true,
+      email: true,
+      isVerified: true,
+    },
+  });
+
+  logAudit({
+    userId: adminId,
+    action: 'admin.user_email_verified',
+    resourceType: 'user',
+    resourceId: userId,
+    oldData: { isVerified: false },
+    newData: { isVerified: true },
+  }, tx);
+
+  return updated;
+}
+
+export async function unverifyUserEmail(userId: string, adminId?: string, tx?: TxClient) {
+  const db = tx ?? prisma;
+
+  const user = await db.user.findUnique({ where: { id: userId } });
+
+  if (!user) {
+    throw new AppError(404, 'User not found', 'USER_NOT_FOUND');
+  }
+
+  if (!user.isVerified) {
+    // Already unverified - return current state (idempotent)
+    return {
+      id: user.id,
+      email: user.email,
+      isVerified: false,
+    };
+  }
+
+  const updated = await db.user.update({
+    where: { id: userId },
+    data: { isVerified: false },
+    select: {
+      id: true,
+      email: true,
+      isVerified: true,
+    },
+  });
+
+  logAudit({
+    userId: adminId,
+    action: 'admin.user_email_unverified',
+    resourceType: 'user',
+    resourceId: userId,
+    oldData: { isVerified: true },
+    newData: { isVerified: false },
+  }, tx);
+
+  return updated;
+}
+
 export async function listAllBusinesses(page: number, limit: number) {
   const [businesses, total] = await Promise.all([
     prisma.business.findMany({

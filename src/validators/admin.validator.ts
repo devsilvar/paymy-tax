@@ -14,6 +14,10 @@ export const toggleStatusSchema = z.object({
   isActive: z.boolean(),
 });
 
+export const verifyEmailSchema = z.object({
+  isVerified: z.boolean(),
+});
+
 export const auditLogFilterSchema = paginationSchema.extend({
   userId: z.string().uuid().optional(),
   action: asStringOptional,
@@ -22,4 +26,5 @@ export const auditLogFilterSchema = paginationSchema.extend({
 export type PaginationInput = z.infer<typeof paginationSchema>;
 export type UserSearchInput = z.infer<typeof userSearchSchema>;
 export type ToggleStatusInput = z.infer<typeof toggleStatusSchema>;
+export type VerifyEmailInput = z.infer<typeof verifyEmailSchema>;
 export type AuditLogFilterInput = z.infer<typeof auditLogFilterSchema>;

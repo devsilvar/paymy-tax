@@ -12,6 +12,7 @@ router.get('/dashboard', adminController.getDashboard);
 router.get('/users', adminController.listUsers);
 router.get('/users/:id', adminController.getUserDetail);
 router.patch('/users/:id/status', adminController.toggleUserStatus);
+router.patch('/users/:id/email-verification', adminController.toggleEmailVerification);
 router.get('/businesses', adminController.listBusinesses);
 router.get('/audit-logs', adminController.listAuditLogs);
 

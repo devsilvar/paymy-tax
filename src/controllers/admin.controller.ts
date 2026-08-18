@@ -5,6 +5,7 @@ import {
   paginationSchema,
   userSearchSchema,
   toggleStatusSchema,
+  verifyEmailSchema,
   auditLogFilterSchema,
 } from '@/validators/admin.validator';
 import * as adminService from '@/services/admin.service';
@@ -52,6 +53,22 @@ export const toggleUserStatus = asyncHandler(
       success: true,
       data: result,
       message: `User ${isActive ? 'activated' : 'deactivated'} successfully`,
+    });
+  }
+);
+
+export const toggleEmailVerification = asyncHandler(
+  async (req: AuthenticatedRequest, res: Response) => {
+    const { isVerified } = verifyEmailSchema.parse(req.body);
+    
+    const result = isVerified
+      ? await adminService.verifyUserEmail(req.params.id, req.user!.userId)
+      : await adminService.unverifyUserEmail(req.params.id, req.user!.userId);
+
+    res.status(200).json({
+      success: true,
+      data: result,
+      message: `User email ${isVerified ? 'verified' : 'unverified'} successfully`,
     });
   }
 );
