@@ -53,6 +53,7 @@ export interface CreateDVAResult {
 export interface RequeryDVAResult {
   accountNumber: string;
   message: string;
+  transactions?: any[]; // Optional array of transactions returned by Paystack requery
 }
 
 // ─── Subaccount & Settlement Types ─────────────────

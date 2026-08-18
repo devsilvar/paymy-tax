@@ -291,6 +291,7 @@ export class PaystackProvider implements PaymentProvider {
 
     return {
       accountNumber: data.account_number || accountNumber,
+      message: 'DVA requeried successfully',
       transactions: data.transactions || [],
     };
   }

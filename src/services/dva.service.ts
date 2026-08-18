@@ -803,21 +803,23 @@ export async function requeryDVA(userId: string, businessId: string) {
 
   lastRequeryTimes.set(businessId, now);
 
+  const transactionCount = result.transactions?.length ?? 0;
+
   logAudit({
     userId,
     businessId,
     action: 'dva.requeried',
     resourceType: 'business',
     resourceId: businessId,
-    newData: { transactionCount: result.transactions.length },
+    newData: { transactionCount },
   });
   // ...
 
-  logger.info('DVA requeried', { businessId, userId, transactionCount: result.transactions.length });
+  logger.info('DVA requeried', { businessId, userId, transactionCount });
 
   return {
     accountNumber: result.accountNumber,
-    transactionCount: result.transactions.length,
+    transactionCount,
     message: 'DVA requeried successfully. Any missing transfers should appear shortly.',
   };
 }
