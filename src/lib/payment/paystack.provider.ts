@@ -290,9 +290,9 @@ export class PaystackProvider implements PaymentProvider {
     const data = await this.request<any>('GET', path);
 
     return {
-      accountNumber: data.account_number || accountNumber,
-      message: 'DVA requeried successfully',
-      transactions: data.transactions || [],
+      accountNumber: data?.account_number || accountNumber,
+      message: 'DVA requery initiated successfully',
+      transactions: data?.transactions || [],
     };
   }
 
