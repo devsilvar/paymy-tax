@@ -1,6 +1,8 @@
 import PDFDocument from 'pdfkit';
 import { Decimal } from '@prisma/client/runtime/library';
 import { config } from '@/config';
+import { fetchLogoForPdf } from '@/lib/pdf-utils';
+
 
 // ─── Design tokens ──────────────────────────────────────────
 // Cool, crisp, minimal palette — slate/ink text, indigo accent,
@@ -134,6 +136,7 @@ interface BusinessForPdf {
   address: string | null;
   city: string | null;
   state: string | null;
+  logoUrl?: string | null;
 }
 
 // ─── Flow-layout primitives ────────────────────────────────
@@ -188,10 +191,14 @@ function drawBlock(doc: PDFKit.PDFDocument, items: BlockItem[], x: number, start
  * extra "paid on / payment method" row never overlap the next section
  * — the layout reflows instead of colliding.
  */
-export function buildInvoicePdf(
+export async function buildInvoicePdf(
   business: BusinessForPdf,
   invoice: InvoiceForPdf,
 ): Promise<Buffer> {
+  const logoBuffer = business.logoUrl
+    ? await fetchLogoForPdf(business.logoUrl)
+    : null;
+
   return new Promise((resolve, reject) => {
     const doc = new PDFDocument({ size: 'A4', margin: 50, bufferPages: true });
     const chunks: Buffer[] = [];
@@ -207,6 +214,25 @@ export function buildInvoicePdf(
     const LEFT_COL_WIDTH = 300;
     const RIGHT_COL_X = 380;
     const RIGHT_COL_WIDTH = 165;
+
+    // Logo (if available)
+    const LOGO_SIZE = 48;
+    const LOGO_GAP = 8;
+    let logoOffset = 0;
+
+    if (logoBuffer) {
+      try {
+        doc.image(logoBuffer, LEFT, HEADER_TOP, {
+          fit: [LOGO_SIZE, LOGO_SIZE],
+        });
+        logoOffset = LOGO_SIZE + LOGO_GAP;
+      } catch {
+        logoOffset = 0;
+      }
+    }
+
+
+    const textStartY = HEADER_TOP + logoOffset;
 
     const bizLines: string[] = [];
     if (business.ownerName) bizLines.push(business.ownerName);
@@ -226,8 +252,9 @@ export function buildInvoicePdf(
         gapAfter: 3,
       })),
     ];
-    const leftHeaderBottom = HEADER_TOP + drawBlockDryRun(doc, leftHeaderItems);
-    drawBlock(doc, leftHeaderItems, LEFT, HEADER_TOP);
+    const leftHeaderBottom = textStartY + drawBlockDryRun(doc, leftHeaderItems);
+    drawBlock(doc, leftHeaderItems, LEFT, textStartY);
+
 
     const rightHeaderItems: BlockItem[] = [
       { text: 'INVOICE', size: 22, font: FONT.bold, width: RIGHT_COL_WIDTH, align: 'right', color: COLORS.ink, gapAfter: 8, characterSpacing: 0.5 },

@@ -6,6 +6,7 @@ import { logAudit } from '@/lib/audit';
 import { buildInvoicePdf } from '@/services/invoice.pdf';
 import { createReminderOnce } from '@/services/reminder.service';
 import { formatNaira, formatDateISO } from '@/lib/format';
+import { verifyBusinessOwnership } from '@/lib/ownership';
 import {
   CreateInvoiceInput,
   UpdateInvoiceInput,
@@ -53,23 +54,6 @@ function maybeFireOverdueReminderOnSend(invoice: {
 }
 
 // ─── Helpers ────────────────────────────────────────────────
-
-async function verifyBusinessOwnership(
-  userId: string,
-  businessId: string,
-  db: TxClient | typeof prisma = prisma,
-) {
-  const business = await db.business.findUnique({ where: { id: businessId } });
-
-  if (!business) {
-    throw new AppError(404, 'Business not found', 'BUSINESS_NOT_FOUND');
-  }
-  if (business.userId !== userId) {
-    throw new AppError(403, 'You do not have access to this business', 'FORBIDDEN');
-  }
-
-  return business;
-}
 
 function toNumber(v: unknown): number {
   if (v === null || v === undefined) return 0;
@@ -826,9 +810,11 @@ export async function generateInvoicePdf(
       address: business.address,
       city: business.city,
       state: business.state,
+      logoUrl: business.logoUrl,
     },
     invoice,
   );
+
 
   const filename = `${invoice.invoiceNumber}.pdf`;
 
@@ -950,9 +936,11 @@ export async function getPublicInvoicePdfByToken(
       address: invoice.business.address,
       city: invoice.business.city,
       state: invoice.business.state,
+      logoUrl: invoice.business.logoUrl,
     },
     invoice,
   );
+
 
   logger.info('Public invoice PDF served', {
     invoiceId: invoice.id,
@@ -1085,9 +1073,11 @@ export async function sendInvoiceByWhatsApp(
       address: business.address,
       city: business.city,
       state: business.state,
+      logoUrl: business.logoUrl,
     },
     existing,
   );
+
 
   const total = toNumber(existing.total);
   const pdfUrl = buildPublicInvoiceLink(shareToken);

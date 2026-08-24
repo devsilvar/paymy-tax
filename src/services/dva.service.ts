@@ -6,21 +6,9 @@ import { logAudit } from '@/lib/audit';
 import { getPaymentProvider } from '@/lib/payment';
 import { createReminderOnce } from '@/services/reminder.service';
 import { formatNaira } from '@/lib/format';
+import { verifyBusinessOwnership } from '@/lib/ownership';
 
 // ─── Helpers ────────────────────────────────────────────────
-
-async function verifyBusinessOwnership(userId: string, businessId: string) {
-  const business = await prisma.business.findUnique({ where: { id: businessId } });
-
-  if (!business) {
-    throw new AppError(404, 'Business not found', 'BUSINESS_NOT_FOUND');
-  }
-  if (business.userId !== userId) {
-    throw new AppError(403, 'You do not have access to this business', 'FORBIDDEN');
-  }
-
-  return business;
-}
 
 function splitName(fullName: string): { firstName: string; lastName: string } {
   const parts = fullName.trim().split(/\s+/);

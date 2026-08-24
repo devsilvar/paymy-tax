@@ -50,6 +50,7 @@
     "@sentry/node": "^10.57.0",
     "@supabase/supabase-js": "^2.100.1",
     "bcrypt": "^6.0.0",
+    "cloudinary": "^2.10.1",
     "cors": "^2.8.6",
     "dotenv": "^17.3.1",
     "exceljs": "^4.4.0",

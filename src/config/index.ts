@@ -129,6 +129,14 @@ export const config = {
     cdnEndpoint: process.env.DO_SPACES_CDN_ENDPOINT || '',
   },
 
+  // Cloudinary
+  cloudinary: {
+    cloudName: process.env.CLOUDINARY_CLOUD_NAME || '',
+    apiKey: process.env.CLOUDINARY_API_KEY || '',
+    apiSecret: process.env.CLOUDINARY_API_SECRET || '',
+  },
+
+
   // Email
   email: {
     apiKey: process.env.RESEND_API_KEY || '',

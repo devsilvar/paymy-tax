@@ -5,25 +5,9 @@ import { AppError } from '@/middleware/errorHandler';
 import { logAudit } from '@/lib/audit';
 import { Decimal } from '@prisma/client/runtime/library';
 import { createMarginWarning } from '@/services/reminder.service';
+import { verifyBusinessOwnership } from '@/lib/ownership';
 
 // ─── Helpers ────────────────────────────────────────────────
-
-async function verifyBusinessOwnership(
-  userId: string,
-  businessId: string,
-  db: TxClient | typeof prisma = prisma
-) {
-  const business = await db.business.findUnique({ where: { id: businessId } });
-
-  if (!business) {
-    throw new AppError(404, 'Business not found', 'BUSINESS_NOT_FOUND');
-  }
-  if (business.userId !== userId) {
-    throw new AppError(403, 'You do not have access to this business', 'FORBIDDEN');
-  }
-
-  return business;
-}
 
 function toNumber(val: Decimal | number | null): number {
   if (val === null) return 0;

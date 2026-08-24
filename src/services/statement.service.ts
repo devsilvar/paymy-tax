@@ -6,6 +6,8 @@ import { AppError } from '@/middleware/errorHandler';
 import { logAudit } from '@/lib/audit';
 import { supabaseAdmin } from '@/lib/supabase';
 import { Decimal } from '@prisma/client/runtime/library';
+import { verifyBusinessOwnership } from '@/lib/ownership';
+import { fetchLogoForPdf } from '@/lib/pdf-utils';
 
 // ─── Helpers ────────────────────────────────────────────────
 
@@ -22,13 +24,6 @@ function formatMonth(date: Date): string {
   return date.toLocaleDateString('en-NG', { year: 'numeric', month: 'long' });
 }
 
-async function verifyBusinessOwnership(userId: string, businessId: string) {
-  const business = await prisma.business.findUnique({ where: { id: businessId } });
-  if (!business) throw new AppError(404, 'Business not found', 'BUSINESS_NOT_FOUND');
-  if (business.userId !== userId) throw new AppError(403, 'You do not have access to this business', 'FORBIDDEN');
-  return business;
-}
-
 // ─── PDF Builder ────────────────────────────────────────────
 
 interface ReportRow {
@@ -42,11 +37,21 @@ interface ReportRow {
   isFinalized: boolean;
 }
 
-function buildPdf(
-  business: { businessName: string; merchantId: string; ownerName: string; taxId: string | null },
+async function buildPdf(
+  business: {
+    businessName: string;
+    merchantId: string;
+    ownerName: string;
+    taxId: string | null;
+    logoUrl?: string | null;
+  },
   reports: ReportRow[],
   periodLabel: string
 ): Promise<Buffer> {
+  const logoBuffer = business.logoUrl
+    ? await fetchLogoForPdf(business.logoUrl)
+    : null;
+
   return new Promise((resolve, reject) => {
     const doc = new PDFDocument({ size: 'A4', margin: 50 });
     const chunks: Buffer[] = [];
@@ -55,10 +60,20 @@ function buildPdf(
     doc.on('end', () => resolve(Buffer.concat(chunks)));
     doc.on('error', reject);
 
+    // ── Logo (if available) ──
+    if (logoBuffer) {
+      try {
+        doc.image(logoBuffer, 50, 45, { fit: [42, 42] });
+      } catch {
+        // Continue gracefully if image rendering fails
+      }
+    }
+
     // ── Header ──
     doc.fontSize(20).font('Helvetica-Bold').text('PayMyTax', { align: 'center' });
     doc.fontSize(10).font('Helvetica').text('Tax History Statement', { align: 'center' });
-    doc.moveDown(0.5);
+    doc.moveDown(0.8);
+
 
     // ── Business Info ──
     doc.fontSize(9).font('Helvetica');

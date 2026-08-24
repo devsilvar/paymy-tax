@@ -1,6 +1,7 @@
 import { Response } from 'express';
-import { asyncHandler } from '@/middleware/errorHandler';
+import { asyncHandler, AppError } from '@/middleware/errorHandler';
 import { AuthenticatedRequest } from '@/types';
+
 import {
   createBusinessSchema,
   updateBusinessSchema,
@@ -68,3 +69,40 @@ export const remove = asyncHandler(async (req: AuthenticatedRequest, res: Respon
     message: 'Business deleted successfully',
   });
 });
+
+type MulterRequest = AuthenticatedRequest & {
+  file?: { buffer: Buffer; mimetype: string; size: number; originalname: string };
+};
+
+export const uploadLogo = asyncHandler(async (req: AuthenticatedRequest, res: Response) => {
+  const file = (req as MulterRequest).file;
+  if (!file) {
+    throw new AppError(400, 'No image file uploaded', 'LOGO_NO_FILE');
+  }
+
+  const business = await businessService.uploadLogo(
+    req.user!.userId,
+    req.params.id,
+    file
+  );
+
+  res.status(200).json({
+    success: true,
+    data: business,
+    message: 'Logo uploaded successfully',
+  });
+});
+
+export const deleteLogo = asyncHandler(async (req: AuthenticatedRequest, res: Response) => {
+  const business = await businessService.removeLogo(
+    req.user!.userId,
+    req.params.id
+  );
+
+  res.status(200).json({
+    success: true,
+    data: business,
+    message: 'Logo removed successfully',
+  });
+});
+

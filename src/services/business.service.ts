@@ -3,6 +3,14 @@ import logger from '@/lib/logger';
 import { AppError } from '@/middleware/errorHandler';
 import { CreateBusinessInput, UpdateBusinessInput } from '@/validators/business.validator';
 import { logAudit } from '@/lib/audit';
+import { invalidateOwnershipCache } from '@/lib/ownership';
+import {
+  uploadLogoToCloudinary,
+  deleteLogoFromCloudinary,
+  ALLOWED_LOGO_MIMES,
+  MAX_LOGO_BYTES,
+} from '@/lib/cloudinary';
+
 
 async function generateMerchantId(db: TxClient | typeof prisma): Promise<string> {
   const PREFIX = 'PMTW';
@@ -128,6 +136,9 @@ export async function updateBusiness(
     newData: input as Record<string, any>,
   }, tx);
 
+  // Invalidate ownership cache after update
+  invalidateOwnershipCache(businessId, userId);
+
   logger.info('Business updated', { businessId, userId });
 
   return updated;
@@ -148,6 +159,11 @@ export async function deleteBusiness(userId: string, businessId: string, tx?: Tx
     throw new AppError(403, 'You do not have access to this business', 'FORBIDDEN');
   }
 
+  // Cascade delete logo from Cloudinary if present
+  if (business.logoPublicId) {
+    await deleteLogoFromCloudinary(business.logoPublicId).catch(() => {});
+  }
+
   await db.business.delete({
     where: { id: businessId },
   });
@@ -161,7 +177,83 @@ export async function deleteBusiness(userId: string, businessId: string, tx?: Tx
     oldData: { businessName: business.businessName },
   }, tx);
 
+  // Invalidate ownership cache after deletion
+  invalidateOwnershipCache(businessId, userId);
+
   logger.info('Business deleted', { businessId, userId });
 
   return { message: 'Business deleted successfully' };
 }
+
+export async function uploadLogo(
+  userId: string,
+  businessId: string,
+  file: { buffer: Buffer; mimetype: string; size: number },
+) {
+  if (!ALLOWED_LOGO_MIMES.has(file.mimetype)) {
+    throw new AppError(400, 'Only JPEG, PNG, WebP or SVG images are accepted.', 'LOGO_BAD_TYPE');
+  }
+  if (file.size > MAX_LOGO_BYTES) {
+    throw new AppError(400, 'Logo must be 2 MB or smaller.', 'LOGO_TOO_LARGE');
+  }
+
+  const business = await prisma.business.findUnique({ where: { id: businessId } });
+  if (!business) throw new AppError(404, 'Business not found', 'BUSINESS_NOT_FOUND');
+  if (business.userId !== userId) throw new AppError(403, 'You do not have access to this business', 'FORBIDDEN');
+
+  const { url, publicId } = await uploadLogoToCloudinary(
+    businessId,
+    file.buffer,
+    file.mimetype,
+    business.logoPublicId,
+  );
+
+  const updated = await prisma.business.update({
+    where: { id: businessId },
+    data: { logoUrl: url, logoPublicId: publicId },
+  });
+
+  logAudit({
+    userId,
+    businessId,
+    action: 'business.logo_uploaded',
+    resourceType: 'business',
+    resourceId: businessId,
+    newData: { logoUrl: url },
+  });
+
+  invalidateOwnershipCache(businessId, userId);
+  logger.info('Business logo uploaded', { businessId, userId });
+
+  return updated;
+}
+
+export async function removeLogo(userId: string, businessId: string) {
+  const business = await prisma.business.findUnique({ where: { id: businessId } });
+  if (!business) throw new AppError(404, 'Business not found', 'BUSINESS_NOT_FOUND');
+  if (business.userId !== userId) throw new AppError(403, 'You do not have access to this business', 'FORBIDDEN');
+  if (!business.logoUrl) throw new AppError(404, 'No logo to remove', 'LOGO_NOT_FOUND');
+
+  if (business.logoPublicId) {
+    await deleteLogoFromCloudinary(business.logoPublicId);
+  }
+
+  const updated = await prisma.business.update({
+    where: { id: businessId },
+    data: { logoUrl: null, logoPublicId: null },
+  });
+
+  logAudit({
+    userId,
+    businessId,
+    action: 'business.logo_deleted',
+    resourceType: 'business',
+    resourceId: businessId,
+  });
+
+  invalidateOwnershipCache(businessId, userId);
+  logger.info('Business logo removed', { businessId, userId });
+
+  return updated;
+}
+

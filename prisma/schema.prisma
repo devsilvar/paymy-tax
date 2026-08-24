@@ -68,9 +68,12 @@ model Business {
   // validation/assignment attempt.
   dvaFailureReason        String?   @map("dva_failure_reason")
   dvaFailedAt             DateTime? @map("dva_failed_at")
+  logoUrl                 String?   @map("logo_url")
+  logoPublicId            String?   @map("logo_public_id")
   createdAt               DateTime  @default(now()) @map("created_at")
   updatedAt               DateTime  @updatedAt @map("updated_at")
   merchantId              String    @unique @map("merchant_id")
+
   auditLogs            AuditLog[]
   user                 User               @relation(fields: [userId], references: [id], onDelete: Cascade)
   customers            Customer[]
@@ -138,6 +141,7 @@ model SalesTransaction {
   @@index([source])
   @@index([businessId, needsVerification], map: "idx_sales_needs_verification")
   @@index([classificationId])
+  @@index([businessId, status, isTaxable, transactionDate], map: "idx_sales_tax_calc")
   @@map("sales_transactions")
 }
 
@@ -159,6 +163,7 @@ model Expense {
   @@index([businessId, expenseDate(sort: Desc)])
   @@index([category])
   @@index([businessId, isDeductible])
+  @@index([businessId, isDeductible, expenseDate], map: "idx_expense_tax_calc")
   @@map("expenses")
 }
 

@@ -3,29 +3,9 @@ import logger from '@/lib/logger';
 import { AppError } from '@/middleware/errorHandler';
 import { logAudit } from '@/lib/audit';
 import { CreateSaleInput, UpdateSaleInput } from '@/validators/sales.validator';
+import { verifyBusinessOwnership } from '@/lib/ownership';
 
 // ─── Helpers ────────────────────────────────────────────────
-
-/**
- * Verify business exists and belongs to the user.
- * Reused across every operation to enforce ownership.
- */
-async function verifyBusinessOwnership(
-  userId: string,
-  businessId: string,
-  db: TxClient | typeof prisma = prisma
-) {
-  const business = await db.business.findUnique({ where: { id: businessId } });
-
-  if (!business) {
-    throw new AppError(404, 'Business not found', 'BUSINESS_NOT_FOUND');
-  }
-  if (business.userId !== userId) {
-    throw new AppError(403, 'You do not have access to this business', 'FORBIDDEN');
-  }
-
-  return business;
-}
 
 /**
  * Check if the month containing `transactionDate` is locked.

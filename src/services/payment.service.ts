@@ -5,6 +5,7 @@ import logger from '@/lib/logger';
 import { AppError } from '@/middleware/errorHandler';
 import { logAudit } from '@/lib/audit';
 import { getPaymentProvider } from '@/lib/payment';
+import { verifyBusinessOwnership } from '@/lib/ownership';
 import {
   processDVAAssignmentWebhook,
   processDVATransferWebhook,
@@ -48,19 +49,6 @@ async function firePaymentSuccessReminder(payment: {
 }
 
 // ─── Helpers ────────────────────────────────────────────────
-
-async function verifyBusinessOwnership(userId: string, businessId: string) {
-  const business = await prisma.business.findUnique({ where: { id: businessId } });
-
-  if (!business) {
-    throw new AppError(404, 'Business not found', 'BUSINESS_NOT_FOUND');
-  }
-  if (business.userId !== userId) {
-    throw new AppError(403, 'You do not have access to this business', 'FORBIDDEN');
-  }
-
-  return business;
-}
 
 // ─── Initiate Payment ───────────────────────────────────────
 

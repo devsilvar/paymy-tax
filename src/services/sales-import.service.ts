@@ -18,6 +18,7 @@ import prisma from '@/lib/prisma';
 import logger from '@/lib/logger';
 import { AppError } from '@/middleware/errorHandler';
 import { logAudit } from '@/lib/audit';
+import { verifyBusinessOwnership } from '@/lib/ownership';
 import {
   parseSalesImportBuffer,
   assertRowCap,
@@ -37,17 +38,6 @@ import {
   getImport,
   dropImport,
 } from '@/lib/sales-import/cache';
-
-// ─── Ownership helper (private copy — not imported to avoid cycles) ──
-
-async function verifyBusinessOwnership(userId: string, businessId: string) {
-  const business = await prisma.business.findUnique({ where: { id: businessId } });
-  if (!business) throw new AppError(404, 'Business not found', 'BUSINESS_NOT_FOUND');
-  if (business.userId !== userId) {
-    throw new AppError(403, 'You do not have access to this business', 'FORBIDDEN');
-  }
-  return business;
-}
 
 // ─── Template download ──────────────────────────────────────
 
