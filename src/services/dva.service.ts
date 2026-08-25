@@ -903,3 +903,66 @@ export async function connectSettlementBank(
 
   return { subaccountCode, accountName, bankName: params.bankName, splitAttached };
 }
+
+// ─── DVA Transactions Listing ────────────────────────────────────────────────
+
+export async function getDVATransactions(
+  userId: string,
+  businessId: string,
+  query: { page?: number; limit?: number; status?: string }
+) {
+  await verifyBusinessOwnership(userId, businessId);
+
+  const page = Math.max(1, query.page ?? 1);
+  const limit = Math.min(100, Math.max(1, query.limit ?? 20));
+  const skip = (page - 1) * limit;
+
+  // Authoritative filter: strictly records auto-captured from the Dedicated Virtual Account
+  const where: any = {
+    businessId,
+    source: 'bank_transfer',
+    metadata: { path: ['channel'], equals: 'dva' },
+  };
+
+  if (query.status === 'confirmed') {
+    where.status = 'confirmed';
+    where.needsVerification = false;
+  } else if (query.status === 'pending') {
+    where.needsVerification = true;
+  }
+
+  const [total, transactions] = await Promise.all([
+    prisma.salesTransaction.count({ where }),
+    prisma.salesTransaction.findMany({
+      where,
+      orderBy: { transactionDate: 'desc' },
+      skip,
+      take: limit,
+      select: {
+        id: true,
+        amount: true,
+        status: true,
+        referenceId: true,
+        customerName: true,
+        customerHint: true,
+        transactionDate: true,
+        needsVerification: true,
+        verifiedAt: true,
+        createdAt: true,
+        metadata: true,
+      },
+    }),
+  ]);
+
+  return {
+    transactions,
+    pagination: {
+      page,
+      limit,
+      total,
+      totalPages: Math.ceil(total / limit),
+      hasNext: page * limit < total,
+      hasPrev: page > 1,
+    },
+  };
+}

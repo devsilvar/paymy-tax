@@ -13,8 +13,10 @@ router.use(authenticate);
 
 router.post('/', salesController.create);
 router.get('/', salesController.getAll);
+router.get('/overview', salesController.getOverview);
 router.get('/summary', salesController.summary);
 router.get('/unverified', salesController.getUnverified);
+
 
 // ─── Sales Import (Excel / CSV) ─────────────────────────────
 //

@@ -40,7 +40,16 @@ export const salesSummaryQuerySchema = z.object({
   year: asNumber({ min: 2020, max: 2100, int: true }),
 });
 
+export const salesOverviewQuerySchema = z.object({
+  period: z.enum(['7d', '30d', '3m', '6m', '12m', 'ytd', 'all', 'custom']).default('12m'),
+  from: asStringOptional,
+  to: asStringOptional,
+  granularity: z.enum(['day', 'month', 'auto']).default('auto'),
+});
+
+
 export type CreateSaleInput = z.infer<typeof createSaleSchema>;
 export type UpdateSaleInput = z.infer<typeof updateSaleSchema>;
 export type SalesQueryInput = z.infer<typeof salesQuerySchema>;
 export type SalesSummaryQueryInput = z.infer<typeof salesSummaryQuerySchema>;
+export type SalesOverviewQueryInput = z.infer<typeof salesOverviewQuerySchema>;

@@ -6,8 +6,24 @@ import {
   updateSaleSchema,
   salesQuerySchema,
   salesSummaryQuerySchema,
+  salesOverviewQuerySchema,
 } from '@/validators/sales.validator';
 import * as salesService from '@/services/sales.service';
+
+export const getOverview = asyncHandler(async (req: AuthenticatedRequest, res: Response) => {
+  const query = salesOverviewQuerySchema.parse(req.query);
+  const overview = await salesService.getSalesAndExpensesOverview(
+    req.user!.userId,
+    req.params.businessId,
+    query
+  );
+
+  res.status(200).json({
+    success: true,
+    data: overview,
+  });
+});
+
 
 export const create = asyncHandler(async (req: AuthenticatedRequest, res: Response) => {
   const input = createSaleSchema.parse(req.body);
