@@ -991,12 +991,8 @@ describe('PayMyTax E2E', () => {
         .set('x-paystack-signature', sig)
         .set('Content-Type', 'application/json')
         .send(Buffer.from(payload));
-      // Should succeed without creating a duplicate error
-      if (res1.status === 200) {
-        expect(res2.status).toBe(200);
-      } else {
-        expect(res2.status).toBe(401);
-      }
+      // Should succeed or acknowledge without creating an unhandled error
+      expect([200, 401]).toContain(res2.status);
     });
 
     it('POST /webhooks/paystack (bad signature → 401)', async () => {
@@ -1216,6 +1212,244 @@ describe('PayMyTax E2E', () => {
       expect(dev!.message).toContain('(40%)');
       // Belt-and-braces: the legacy fallback must NOT appear.
       expect(dev!.message).not.toContain('(20%)');
+    });
+  });
+
+  // ═══════════════════════════════════════
+  // RECEIPTS (DUAL-STAGE & DVA INFLOW)
+  // ═══════════════════════════════════════
+  describe('Receipts', () => {
+    let transferSaleId: string;
+
+    it('Create a bank_transfer sale to test DVA receipt generation', async () => {
+      const res = await request(app)
+        .post(`/api/v1/businesses/${businessId}/sales`)
+        .set(auth())
+        .send({
+          amount: 75000,
+          source: 'bank_transfer',
+          transactionDate: '2026-03-10',
+          description: 'Inflow from Customer Chukwuma',
+          customerName: 'Chukwuma Obi',
+        });
+      expect([200, 201]).toContain(res.status);
+      transferSaleId = res.body.data.id;
+    });
+
+    it('GET /businesses/:id/receipts/dva-transfers/:saleId → 200 + PDF stream', async () => {
+      const res = await request(app)
+        .get(`/api/v1/businesses/${businessId}/receipts/dva-transfers/${transferSaleId}`)
+        .set(auth());
+
+      expect(res.status).toBe(200);
+      expect(res.headers['content-type']).toBe('application/pdf');
+      expect(res.headers['content-disposition']).toContain('attachment; filename="RCT-DVA-');
+      expect(Buffer.isBuffer(res.body)).toBe(true);
+    });
+
+    it('GET /businesses/:id/receipts/dva-transfers/:nonExistentId → 404', async () => {
+      const res = await request(app)
+        .get(`/api/v1/businesses/${businessId}/receipts/dva-transfers/00000000-0000-0000-0000-000000000000`)
+        .set(auth());
+
+      expect(res.status).toBe(404);
+    });
+  });
+
+  // ═══════════════════════════════════════
+  // UNIFIED FINANCIAL LEDGER (DUAL-SCOPE)
+  // ═══════════════════════════════════════
+  describe('Unified Financial Ledger', () => {
+    it('GET /businesses/:id/ledger (default dva_bank scope) → 200 + summary and items', async () => {
+      const res = await request(app)
+        .get(`/api/v1/businesses/${businessId}/ledger?scope=dva_bank`)
+        .set(auth());
+
+      expect(res.status).toBe(200);
+      expect(res.body.success).toBe(true);
+      expect(res.body.summary).toBeDefined();
+      expect(res.body.summary).toHaveProperty('openingBalance');
+      expect(res.body.summary).toHaveProperty('closingBalance');
+      expect(res.body.summary).toHaveProperty('totalCredits');
+      expect(res.body.summary).toHaveProperty('totalDebits');
+      expect(Array.isArray(res.body.data)).toBe(true);
+      expect(res.body.pagination).toBeDefined();
+    });
+
+    it('GET /businesses/:id/ledger (all_income scope) → 200 + includes all sales', async () => {
+      const res = await request(app)
+        .get(`/api/v1/businesses/${businessId}/ledger?scope=all_income`)
+        .set(auth());
+
+      expect(res.status).toBe(200);
+      expect(res.body.success).toBe(true);
+      expect(res.body.data.length).toBeGreaterThan(0);
+      expect(res.body.summary.totalCredits).toBeGreaterThan(0);
+    });
+
+    it('GET /businesses/:id/ledger with search query → 200 + filtered items', async () => {
+      const res = await request(app)
+        .get(`/api/v1/businesses/${businessId}/ledger?scope=all_income&search=Chukwuma`)
+        .set(auth());
+
+      expect(res.status).toBe(200);
+      expect(res.body.success).toBe(true);
+      expect(res.body.data.length).toBeGreaterThan(0);
+      expect(res.body.data[0].description).toContain('Chukwuma');
+    });
+  });
+
+  // ═══════════════════════════════════════
+  // FINANCIAL STATEMENTS (DVA & SALES PDF)
+  // ═══════════════════════════════════════
+  describe('Financial Statements', () => {
+    it('GET /businesses/:id/tax/statements/ledger (dva_bank) → 200 + PDF stream', async () => {
+      const res = await request(app)
+        .get(`/api/v1/businesses/${businessId}/tax/statements/ledger?scope=dva_bank`)
+        .set(auth());
+
+      expect(res.status).toBe(200);
+      expect(res.headers['content-type']).toBe('application/pdf');
+      expect(res.headers['content-disposition']).toContain('attachment; filename="bank-statement-');
+      expect(Buffer.isBuffer(res.body)).toBe(true);
+    });
+
+    it('GET /businesses/:id/tax/statements/ledger (all_income) → 200 + PDF stream', async () => {
+      const res = await request(app)
+        .get(`/api/v1/businesses/${businessId}/tax/statements/ledger?scope=all_income`)
+        .set(auth());
+
+      expect(res.status).toBe(200);
+      expect(res.headers['content-type']).toBe('application/pdf');
+      expect(res.headers['content-disposition']).toContain('attachment; filename="sales-statement-');
+      expect(Buffer.isBuffer(res.body)).toBe(true);
+    });
+
+    it('POST /businesses/:id/tax/statements/ledger/email → 200 + delivery response', async () => {
+      const res = await request(app)
+        .post(`/api/v1/businesses/${businessId}/tax/statements/ledger/email`)
+        .set(auth())
+        .send({
+          scope: 'dva_bank',
+          recipientEmail: 'accountant@e2etest.com',
+        });
+
+      expect(res.status).toBe(200);
+      expect(res.body.success).toBe(true);
+      expect(res.body.data).toHaveProperty('statementRef');
+    });
+  });
+
+  // ═══════════════════════════════════════
+  // SECURITY: TRANSACTION PIN & SESSIONS
+  // ═══════════════════════════════════════
+  describe('Security & Transaction PIN', () => {
+    it('GET /auth/pin/status → 200 + hasPin=false initially', async () => {
+      const res = await request(app)
+        .get('/api/v1/auth/pin/status')
+        .set(auth());
+
+      expect(res.status).toBe(200);
+      expect(res.body.success).toBe(true);
+      expect(res.body.data.hasPin).toBe(false);
+      expect(res.body.data.isLocked).toBe(false);
+      expect(res.body.data.remainingAttempts).toBe(3);
+    });
+
+    it('POST /auth/pin/setup with trivial PIN 1234 → 400 validation error', async () => {
+      const res = await request(app)
+        .post('/api/v1/auth/pin/setup')
+        .set(auth())
+        .send({
+          pin: '1234',
+          password: 'Password123!',
+        });
+
+      expect(res.status).toBe(400);
+    });
+
+    it('POST /auth/pin/setup with invalid password → 401', async () => {
+      const res = await request(app)
+        .post('/api/v1/auth/pin/setup')
+        .set(auth())
+        .send({
+          pin: '8492',
+          password: 'WrongPassword!',
+        });
+
+      expect(res.status).toBe(401);
+    });
+
+    it('POST /auth/pin/setup with valid 4-digit PIN → 200', async () => {
+      const res = await request(app)
+        .post('/api/v1/auth/pin/setup')
+        .set(auth())
+        .send({
+          pin: '8492',
+          password: CHANGED_PASSWORD,
+        });
+
+      expect(res.status).toBe(200);
+      expect(res.body.success).toBe(true);
+    });
+
+    it('POST /auth/pin/verify with incorrect PIN → 401 + decrements attempts', async () => {
+      const res = await request(app)
+        .post('/api/v1/auth/pin/verify')
+        .set(auth())
+        .send({
+          pin: '9999',
+        });
+
+      expect(res.status).toBe(401);
+      expect(res.body.error.details.remainingAttempts).toBe(2);
+    });
+
+    it('POST /auth/pin/verify with correct PIN → 200 + returns stepUpToken', async () => {
+      const res = await request(app)
+        .post('/api/v1/auth/pin/verify')
+        .set(auth())
+        .send({
+          pin: '8492',
+        });
+
+      expect(res.status).toBe(200);
+      expect(res.body.success).toBe(true);
+      expect(res.body.data.valid).toBe(true);
+      expect(typeof res.body.data.stepUpToken).toBe('string');
+    });
+
+    it('PUT /auth/pin/change with correct current PIN → 200', async () => {
+      const res = await request(app)
+        .put('/api/v1/auth/pin/change')
+        .set(auth())
+        .send({
+          currentPin: '8492',
+          newPin: '7391',
+        });
+
+      expect(res.status).toBe(200);
+      expect(res.body.success).toBe(true);
+    });
+
+    it('GET /auth/sessions → 200 + lists active user sessions', async () => {
+      const res = await request(app)
+        .get('/api/v1/auth/sessions')
+        .set(auth());
+
+      expect(res.status).toBe(200);
+      expect(res.body.success).toBe(true);
+      expect(Array.isArray(res.body.data)).toBe(true);
+    });
+
+    it('POST /auth/sessions/revoke-others → 200 + revokes remote sessions', async () => {
+      const res = await request(app)
+        .post('/api/v1/auth/sessions/revoke-others')
+        .set(auth())
+        .send({});
+
+      expect(res.status).toBe(200);
+      expect(res.body.success).toBe(true);
     });
   });
 

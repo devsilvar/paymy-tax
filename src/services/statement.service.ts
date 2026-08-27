@@ -8,6 +8,9 @@ import { supabaseAdmin } from '@/lib/supabase';
 import { Decimal } from '@prisma/client/runtime/library';
 import { verifyBusinessOwnership } from '@/lib/ownership';
 import { fetchLogoForPdf } from '@/lib/pdf-utils';
+import { buildLedgerStatementPdf } from './ledger-statement.pdf';
+import { getUnifiedLedger } from './ledger.service';
+import { sendEmail } from '@/lib/email';
 
 // ─── Helpers ────────────────────────────────────────────────
 
@@ -243,4 +246,138 @@ export async function downloadPeriodStatement(
   logger.info('Period statement downloaded', { businessId, from, to, reportCount: reports.length });
 
   return { buffer, filename };
+}
+
+/**
+ * Generates an official dual-scope financial ledger statement PDF.
+ */
+export async function getLedgerStatementPdf(
+  userId: string,
+  businessId: string,
+  query: {
+    scope?: 'dva_bank' | 'all_income';
+    from?: string;
+    to?: string;
+  }
+): Promise<{ buffer: Buffer; filename: string; statementRef: string }> {
+  const business = await verifyBusinessOwnership(userId, businessId);
+
+  const scope = query.scope || 'dva_bank';
+  const ledgerData = await getUnifiedLedger(userId, businessId, {
+    scope,
+    from: query.from,
+    to: query.to,
+    type: 'all',
+    page: 1,
+    limit: 100,
+  });
+
+  const statementRef = `STMT-${business.merchantId}-${Date.now().toString(36).toUpperCase()}`;
+  const periodLabel = query.from && query.to
+    ? `${query.from} — ${query.to}`
+    : query.from
+    ? `From ${query.from}`
+    : query.to
+    ? `Up to ${query.to}`
+    : 'All Time to Date';
+
+  const buffer = await buildLedgerStatementPdf({
+    business: {
+      businessName: business.businessName,
+      merchantId: business.merchantId,
+      ownerName: business.ownerName,
+      taxId: business.taxId,
+      address: business.address,
+      logoUrl: business.logoUrl,
+      virtualAccountNumber: business.virtualAccountNumber,
+      virtualAccountBank: business.virtualAccountBank,
+    },
+    scope,
+    periodLabel,
+    summary: ledgerData.summary,
+    rows: ledgerData.data,
+    statementRef,
+  });
+
+  const filename = `${scope === 'dva_bank' ? 'bank-statement' : 'sales-statement'}-${business.merchantId}-${statementRef}.pdf`;
+
+  logAudit({
+    userId,
+    businessId,
+    action: 'statement.downloaded',
+    resourceType: 'ledger_statement',
+    resourceId: businessId,
+    newData: { scope, from: query.from, to: query.to, statementRef, rowsCount: ledgerData.data.length },
+  });
+
+  logger.info('Ledger statement generated', { businessId, scope, statementRef, rowsCount: ledgerData.data.length });
+
+  return { buffer, filename, statementRef };
+}
+
+/**
+ * Sends official financial ledger statement PDF to specified email address.
+ */
+export async function emailLedgerStatement(
+  userId: string,
+  businessId: string,
+  query: {
+    scope?: 'dva_bank' | 'all_income';
+    from?: string;
+    to?: string;
+    recipientEmail: string;
+  }
+): Promise<{ success: boolean; delivered: boolean; statementRef: string }> {
+  const business = await verifyBusinessOwnership(userId, businessId);
+
+  if (!query.recipientEmail) {
+    throw new AppError(400, 'Recipient email is required', 'RECIPIENT_EMAIL_REQUIRED');
+  }
+
+  const { buffer, filename, statementRef } = await getLedgerStatementPdf(userId, businessId, query);
+
+  const scopeLabel = query.scope === 'all_income' ? 'Comprehensive Business Sales Statement' : 'Dedicated Virtual Bank Account Statement';
+
+  const emailRes = await sendEmail({
+    to: query.recipientEmail,
+    subject: `Official Financial Statement: ${business.businessName} (${statementRef})`,
+    html: `
+      <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px; color: #1e293b;">
+        <h2 style="color: #4f46e5; margin-bottom: 8px;">Official Financial Statement</h2>
+        <p style="font-size: 14px; margin-top: 0; color: #64748b;">PayMyTax Automated SME Compliance</p>
+        <hr style="border: none; border-top: 1px solid #e2e8f0; margin: 20px 0;" />
+        <p>Dear Customer,</p>
+        <p>Attached is your requested <strong>${scopeLabel}</strong> for <strong>${business.businessName}</strong>.</p>
+        <div style="background-color: #f8fafc; border: 1px solid #e2e8f0; border-radius: 8px; padding: 15px; margin: 20px 0;">
+          <p style="margin: 4px 0; font-size: 13px;"><strong>Merchant ID:</strong> ${business.merchantId}</p>
+          <p style="margin: 4px 0; font-size: 13px;"><strong>Statement Ref:</strong> ${statementRef}</p>
+          <p style="margin: 4px 0; font-size: 13px;"><strong>Scope:</strong> ${scopeLabel}</p>
+          <p style="margin: 4px 0; font-size: 13px;"><strong>Generated Date:</strong> ${new Date().toLocaleDateString('en-NG', { dateStyle: 'long' })}</p>
+        </div>
+        <p style="font-size: 12px; color: #64748b;">This is a system-generated financial document with official compliance cryptographic verification.</p>
+      </div>
+    `,
+    attachments: [
+      {
+        filename,
+        content: buffer,
+        contentType: 'application/pdf',
+      },
+    ],
+  });
+
+  logAudit({
+    userId,
+    businessId,
+    action: 'statement.emailed',
+    resourceType: 'ledger_statement',
+    resourceId: businessId,
+    newData: { scope: query.scope, recipientEmail: query.recipientEmail, statementRef },
+  });
+
+  return {
+    success: true,
+    delivered: emailRes.delivered,
+    statementRef,
+  };
 }

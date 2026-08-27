@@ -308,9 +308,12 @@ export async function getVirtualAccount(userId: string, businessId: string) {
     return {
       status: 'active',
       accountNumber: business.virtualAccountNumber,
-      bankName: business.virtualAccountBank,
+      bankName: business.virtualAccountBank || 'Wema Bank',
+      accountName: business.ownerName,
+      businessName: business.businessName,
     };
   }
+
 
   // Surfaces a `customeridentification.failed` / `dedicatedaccount.assign.failed`
   // webhook that landed since the last check. Without this, the frontend's

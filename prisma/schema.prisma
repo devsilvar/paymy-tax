@@ -29,8 +29,13 @@ model User {
   resetTokenExpiresAt DateTime?  @map("reset_token_expires_at")
   resetTokenHash      String?    @map("reset_token_hash")
   role                UserRole   @default(user)
+  transactionPin      String?    @map("transaction_pin")
+  pinAttempts         Int        @default(0) @map("pin_attempts")
+  pinLockedUntil      DateTime?  @map("pin_locked_until")
+  pinSetAt            DateTime?  @map("pin_set_at")
   auditLogs           AuditLog[]
   businesses          Business[]
+  sessions            Session[]
 
   @@index([email])
   @@index([phone])
@@ -530,4 +535,22 @@ model Bank {
   @@index([country, active])
   @@index([code])
   @@map("banks")
+}
+
+/// User login sessions for multi-device management and revocation
+model Session {
+  id               String    @id @default(uuid())
+  userId           String    @map("user_id")
+  refreshTokenHash String    @map("refresh_token_hash")
+  ipAddress        String?   @map("ip_address")
+  userAgent        String?   @map("user_agent")
+  deviceInfo       String?   @map("device_info")
+  lastActiveAt     DateTime  @default(now()) @map("last_active_at")
+  isRevoked        Boolean   @default(false) @map("is_revoked")
+  createdAt        DateTime  @default(now()) @map("created_at")
+  user             User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([refreshTokenHash])
+  @@map("sessions")
 }

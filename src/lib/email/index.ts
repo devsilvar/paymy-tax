@@ -79,8 +79,8 @@ export async function sendEmail(input: SendEmailInput): Promise<SendEmailResult>
         htmlPreview: input.html.slice(0, 200),
         note: 'Add and verify your domain at https://resend.com/domains',
       });
-      // In dev, treat domain verification errors as non-critical (log but continue)
-      if (config.app.isDevelopment) {
+      // In dev/test, treat domain verification errors as non-critical (log but continue)
+      if (config.app.isDevelopment || config.app.env === 'test') {
         return { delivered: false };
       }
     }

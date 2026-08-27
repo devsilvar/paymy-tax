@@ -48,6 +48,79 @@ async function firePaymentSuccessReminder(payment: {
   }
 }
 
+async function dispatchPaymentReceiptEmail(payment: {
+  id: string;
+  businessId: string;
+  taxReportId: string;
+  amountPaid: number | string;
+  transactionReference: string;
+  paymentDate?: Date;
+}) {
+  try {
+    const business = await prisma.business.findUnique({
+      where: { id: payment.businessId },
+      include: { user: { select: { email: true } } },
+    });
+    const report = await prisma.monthlyTaxReport.findUnique({
+      where: { id: payment.taxReportId },
+    });
+
+    if (!business || !report || !business.user?.email) return;
+
+    const { getTaxPaymentReceipt } = await import('@/services/receipt.service');
+    const { sendEmail } = await import('@/lib/email');
+    const { generatePaymentReceiptHtml, generatePaymentReceiptText } = await import(
+      '@/lib/email/templates/payment-receipt'
+    );
+
+    const receipt = await getTaxPaymentReceipt(business.userId, business.id, payment.id);
+    const taxMonthLabel = formatTaxMonth(report.taxMonth);
+    const amountFormatted = formatNaira(payment.amountPaid);
+    const paymentDateStr = (payment.paymentDate || new Date()).toLocaleDateString('en-NG', {
+      year: 'numeric',
+      month: 'short',
+      day: 'numeric',
+    });
+
+    await sendEmail({
+      to: business.user.email,
+      subject: `Tax Payment Receipt - ${taxMonthLabel} (${amountFormatted})`,
+      html: generatePaymentReceiptHtml({
+        businessName: business.businessName,
+        ownerName: business.ownerName,
+        amountFormatted,
+        taxMonthLabel,
+        paymentReference: payment.transactionReference,
+        paymentDate: paymentDateStr,
+        receiptNumber: receipt.receiptNumber,
+      }),
+      text: generatePaymentReceiptText({
+        businessName: business.businessName,
+        ownerName: business.ownerName,
+        amountFormatted,
+        taxMonthLabel,
+        paymentReference: payment.transactionReference,
+        paymentDate: paymentDateStr,
+        receiptNumber: receipt.receiptNumber,
+      }),
+      attachments: [
+        {
+          filename: receipt.filename,
+          content: receipt.buffer,
+          contentType: 'application/pdf',
+        },
+      ],
+    });
+
+    logger.info('Tax payment receipt email dispatched', { paymentId: payment.id, to: business.user.email });
+  } catch (err) {
+    logger.warn('Failed to send payment receipt email', {
+      paymentId: payment.id,
+      err: err instanceof Error ? err.message : err,
+    });
+  }
+}
+
 // ─── Helpers ────────────────────────────────────────────────
 
 // ─── Initiate Payment ───────────────────────────────────────
@@ -370,6 +443,16 @@ export async function processWebhook(signature: string, rawBody: string) {
       taxReportId: payment.taxReportId,
       amountPaid: Number(payment.amountPaid),
     });
+
+    // Fire-and-forget email receipt with PDF attachment
+    void dispatchPaymentReceiptEmail({
+      id: payment.id,
+      businessId: payment.businessId,
+      taxReportId: payment.taxReportId,
+      amountPaid: Number(payment.amountPaid),
+      transactionReference: reference,
+      paymentDate: paid_at ? new Date(paid_at) : new Date(),
+    });
   }
 
   if (event.event === 'charge.refunded') {
@@ -548,6 +631,16 @@ export async function verifyPayment(userId: string, businessId: string, paymentI
       businessId: updated.businessId,
       taxReportId: updated.taxReportId,
       amountPaid: Number(updated.amountPaid),
+    });
+
+    // Fire-and-forget email receipt with PDF attachment
+    void dispatchPaymentReceiptEmail({
+      id: updated.id,
+      businessId: updated.businessId,
+      taxReportId: updated.taxReportId,
+      amountPaid: Number(updated.amountPaid),
+      transactionReference: updated.transactionReference,
+      paymentDate: updated.paymentDate || new Date(),
     });
 
     return updated;

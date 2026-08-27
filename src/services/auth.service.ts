@@ -8,6 +8,7 @@ import { AppError } from '@/middleware/errorHandler';
 import { JWTPayload } from '@/types';
 import { RegisterInput, LoginInput } from '@/validators/auth.validator';
 import { logAudit } from '@/lib/audit';
+import { recordSession, hashRefreshToken } from './session.service';
 
 // Optimized for small container CPU (0.5 CPU): 10 rounds = ~80ms vs 12 rounds = ~350-600ms
 // Industry standard is 10 rounds (2^10 = 1024 iterations), sufficient for 2026 threat model
@@ -78,7 +79,7 @@ export async function register(input: RegisterInput) {
   return { user: sanitizeUser(user), ...tokens };
 }
 
-export async function login(input: LoginInput) {
+export async function login(input: LoginInput, ipAddress?: string, userAgent?: string) {
   const user = await prisma.user.findUnique({
     where: { email: input.email },
   });
@@ -114,6 +115,12 @@ export async function login(input: LoginInput) {
 
   const tokens = generateTokens({ userId: user.id, email: user.email, role: user.role });
 
+  try {
+    await recordSession(user.id, tokens.refreshToken, ipAddress, userAgent);
+  } catch (err) {
+    logger.warn('Failed to record session during login', { userId: user.id, err });
+  }
+
   logger.info('User logged in', { userId: user.id, email: user.email });
 
   return { user: sanitizeUser(user), ...tokens };
@@ -128,12 +135,29 @@ export async function refreshAccessToken(refreshToken: string) {
     throw new AppError(401, 'Invalid or expired refresh token', 'INVALID_REFRESH_TOKEN');
   }
 
+  // Check if the session was explicitly revoked
+  const tokenHash = hashRefreshToken(refreshToken);
+  const session = await prisma.session.findFirst({
+    where: { refreshTokenHash: tokenHash },
+  });
+
+  if (session && session.isRevoked) {
+    throw new AppError(401, 'Session has been revoked. Please log in again.', 'SESSION_REVOKED');
+  }
+
   const user = await prisma.user.findUnique({
     where: { id: decoded.userId },
   });
 
   if (!user || !user.isActive) {
     throw new AppError(401, 'User not found or inactive', 'UNAUTHORIZED');
+  }
+
+  if (session) {
+    prisma.session.update({
+      where: { id: session.id },
+      data: { lastActiveAt: new Date() },
+    }).catch(() => {});
   }
 
   const accessToken = jwt.sign(

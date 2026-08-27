@@ -25,6 +25,8 @@ import publicRoutes from './public.routes';
 import bankRoutes from './bank.routes';
 import testRoutes from './test.routes';
 import transactionClassificationRoutes from './transaction-classification.routes';
+import receiptRoutes from './receipt.routes';
+import ledgerRoutes from './ledger.routes';
 
 const router = Router();
 
@@ -50,6 +52,8 @@ v1.use('/businesses/:businessId/tax', statementRoutes);
 v1.use('/businesses/:businessId/reminders', reminderRoutes);
 v1.use('/businesses/:businessId/dva', dvaRoutes);
 v1.use('/businesses/:businessId/invoices', invoiceRoutes);
+v1.use('/businesses/:businessId/receipts', receiptRoutes);
+v1.use('/businesses/:businessId/ledger', ledgerRoutes);
 v1.use('/businesses/:businessId/search', searchRoutes);
 v1.use('/banks', bankRoutes);
 v1.use('/transaction-classifications', transactionClassificationRoutes);

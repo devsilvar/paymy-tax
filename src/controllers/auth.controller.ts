@@ -25,7 +25,7 @@ export const register = asyncHandler(async (req: Request, res: Response) => {
 
 export const login = asyncHandler(async (req: Request, res: Response) => {
   const input = loginSchema.parse(req.body);
-  const result = await authService.login(input);
+  const result = await authService.login(input, req.ip, req.get('user-agent'));
 
   res.status(200).json({
     success: true,
