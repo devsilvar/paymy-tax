@@ -275,6 +275,8 @@ export async function initiatePayment(
     data: { paymentStatus: 'processing' },
   });
 
+  const callback = callbackUrl || `${config.cors.frontendUrl}/payments/callback?businessId=${businessId}&reportId=${taxReportId}&paymentId=${payment.id}&reference=${reference}`;
+
   // Initialize with payment provider
   const provider = getPaymentProvider();
   const result = await provider.initialize({
@@ -287,7 +289,7 @@ export async function initiatePayment(
       taxReportId,
       businessName: business.businessName,
     },
-    callbackUrl,
+    callbackUrl: callback,
   });
 
   logAudit({
@@ -550,8 +552,88 @@ export async function processWebhook(signature: string, rawBody: string) {
       });
 
       logger.info('Invoice refunded and unlinked', { invoiceId: invoice.id, reference });
+      return;
     }
   }
+
+  // ─── Settlement Payout Transfer Webhooks ───────────────────
+  if (event.event === 'transfer.success') {
+      const transferData = event.data || {};
+      const ref = transferData.reference;
+      const transferCode = transferData.transfer_code;
+
+      const payout = await prisma.settlementPayout.findFirst({
+        where: {
+          OR: [
+            ...(ref ? [{ transferReference: ref }] : []),
+            ...(transferCode ? [{ paystackTransferCode: transferCode }] : []),
+          ],
+        },
+      });
+
+      if (payout) {
+        await prisma.settlementPayout.update({
+          where: { id: payout.id },
+          data: {
+            status: 'completed',
+            completedAt: new Date(),
+          },
+        });
+
+        logAudit({
+          businessId: payout.businessId,
+          action: 'settlement.payout_completed',
+          resourceType: 'settlement_payout',
+          resourceId: payout.id,
+          newData: { reference: ref, transferCode },
+        });
+
+        logger.info('Settlement payout marked completed via webhook', {
+          payoutId: payout.id,
+          reference: ref,
+        });
+      }
+    }
+
+    if (event.event === 'transfer.failed' || event.event === 'transfer.reversed') {
+      const transferData = event.data || {};
+      const ref = transferData.reference;
+      const transferCode = transferData.transfer_code;
+      const reason = transferData.reason || event.event;
+
+      const payout = await prisma.settlementPayout.findFirst({
+        where: {
+          OR: [
+            ...(ref ? [{ transferReference: ref }] : []),
+            ...(transferCode ? [{ paystackTransferCode: transferCode }] : []),
+          ],
+        },
+      });
+
+      if (payout) {
+        await prisma.settlementPayout.update({
+          where: { id: payout.id },
+          data: {
+            status: 'failed',
+            failureReason: reason,
+          },
+        });
+
+        logAudit({
+          businessId: payout.businessId,
+          action: 'settlement.payout_failed',
+          resourceType: 'settlement_payout',
+          resourceId: payout.id,
+          newData: { reference: ref, transferCode, reason },
+        });
+
+        logger.info('Settlement payout marked failed via webhook', {
+          payoutId: payout.id,
+          reference: ref,
+          reason,
+        });
+      }
+    }
 
     // Mark webhook as processed
     await prisma.paystackWebhookEvent.update({
@@ -716,4 +798,50 @@ export async function getPayment(userId: string, businessId: string, paymentId: 
   }
 
   return payment;
+}
+
+// ─── Abandon Stale / Pending Payment ────────────────────────
+
+export async function abandonPayment(userId: string, businessId: string, paymentId: string) {
+  await verifyBusinessOwnership(userId, businessId);
+
+  const payment = await prisma.taxPayment.findUnique({ where: { id: paymentId } });
+  if (!payment || payment.businessId !== businessId) {
+    throw new AppError(404, 'Payment not found', 'PAYMENT_NOT_FOUND');
+  }
+
+  if (payment.paymentStatus === 'completed') {
+    throw new AppError(400, 'Cannot abandon an already completed payment', 'PAYMENT_ALREADY_COMPLETED');
+  }
+
+  const updatedPayment = await prisma.$transaction(async (tx) => {
+    const p = await tx.taxPayment.update({
+      where: { id: paymentId },
+      data: {
+        paymentStatus: 'failed',
+        gatewayResponse: { abandoned: true, abandonedAt: new Date().toISOString() },
+      },
+    });
+
+    // Reset report status back to pending so the SME can re-calculate or re-attempt payment
+    await tx.monthlyTaxReport.update({
+      where: { id: payment.taxReportId },
+      data: { paymentStatus: 'pending' },
+    });
+
+    return p;
+  });
+
+  logAudit({
+    userId,
+    businessId,
+    action: 'payment.abandoned',
+    resourceType: 'tax_payment',
+    resourceId: paymentId,
+    newData: { reference: payment.transactionReference },
+  });
+
+  logger.info('Tax payment abandoned and report reset to pending', { paymentId, businessId });
+
+  return updatedPayment;
 }

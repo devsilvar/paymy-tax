@@ -74,3 +74,17 @@ export const handleWebhook = asyncHandler(async (req: Request, res: Response) =>
 
   res.status(200).json({ success: true });
 });
+
+export const abandonPayment = asyncHandler(async (req: AuthenticatedRequest, res: Response) => {
+  const payment = await paymentService.abandonPayment(
+    req.user!.userId,
+    req.params.businessId,
+    req.params.paymentId
+  );
+
+  res.status(200).json({
+    success: true,
+    data: payment,
+    message: 'Payment abandoned and report reset',
+  });
+});

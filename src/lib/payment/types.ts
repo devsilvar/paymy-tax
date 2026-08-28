@@ -80,6 +80,43 @@ export interface SplitDedicatedAccountResult {
   bankName: string | null;
 }
 
+export interface UpdateSubaccountParams {
+  percentageCharge?: number;
+  businessName?: string;
+  bankCode?: string;
+  accountNumber?: string;
+}
+
+// ─── Transfer / Payout Types ─────────────────────────────────
+
+export interface CreateTransferRecipientParams {
+  type: 'nuban';
+  name: string;
+  accountNumber: string;
+  bankCode: string;
+  currency?: string;
+  description?: string;
+}
+
+export interface CreateTransferRecipientResult {
+  recipientCode: string;
+}
+
+export interface InitiateTransferParams {
+  source: 'balance';
+  amount: number; // in major currency unit (e.g. Naira)
+  recipient: string; // recipient code (RCP_xxxx)
+  reason: string;
+  reference: string;
+}
+
+export interface InitiateTransferResult {
+  transferCode: string;
+  status: string;
+  reference: string;
+  amount: number;
+}
+
 // Paystack moved from `type:'bvn'` to `type:'bank_account'` validation —
 // the new shape requires both the customer's BVN *and* a bank account on
 // their name (account_number + bank_code) so Paystack can cross-check.
@@ -132,6 +169,7 @@ export interface PaymentProvider {
   listBanks(country?: string): Promise<BankRecord[]>;
   resolveAccount(accountNumber: string, bankCode: string): Promise<ResolveAccountResult>;
   createSubaccount(params: CreateSubaccountParams): Promise<CreateSubaccountResult>;
+  updateSubaccount(subaccountCode: string, params: UpdateSubaccountParams): Promise<{ subaccountCode: string }>;
   // Attach (or update) a subaccount split on an EXISTING dedicated virtual
   // account. New DVAs get the subaccount at creation time via
   // createDedicatedAccount's `subaccount` arg; this is the retrofit path for
@@ -140,4 +178,6 @@ export interface PaymentProvider {
     customerCode: string,
     subaccount: string
   ): Promise<SplitDedicatedAccountResult>;
+  createTransferRecipient(params: CreateTransferRecipientParams): Promise<CreateTransferRecipientResult>;
+  initiateTransfer(params: InitiateTransferParams): Promise<InitiateTransferResult>;
 }

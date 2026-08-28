@@ -27,6 +27,7 @@ import testRoutes from './test.routes';
 import transactionClassificationRoutes from './transaction-classification.routes';
 import receiptRoutes from './receipt.routes';
 import ledgerRoutes from './ledger.routes';
+import settlementRoutes from './settlement.routes';
 
 const router = Router();
 
@@ -51,6 +52,7 @@ v1.use('/businesses/:businessId/tax', paymentRoutes);
 v1.use('/businesses/:businessId/tax', statementRoutes);
 v1.use('/businesses/:businessId/reminders', reminderRoutes);
 v1.use('/businesses/:businessId/dva', dvaRoutes);
+v1.use('/businesses/:businessId/settlement', settlementRoutes);
 v1.use('/businesses/:businessId/invoices', invoiceRoutes);
 v1.use('/businesses/:businessId/receipts', receiptRoutes);
 v1.use('/businesses/:businessId/ledger', ledgerRoutes);

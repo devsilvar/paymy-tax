@@ -11,5 +11,6 @@ router.post('/pay', paymentRateLimiter, paymentController.initiatePayment);
 router.get('/payments', paymentController.listPayments);
 router.get('/payments/:paymentId', paymentController.getPayment);
 router.get('/payments/:paymentId/verify', paymentController.verifyPayment);
+router.post('/payments/:paymentId/abandon', paymentController.abandonPayment);
 
 export default router;

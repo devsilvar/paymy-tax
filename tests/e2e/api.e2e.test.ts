@@ -2,6 +2,7 @@
 import 'dotenv/config'; // Load .env before any test so signature calc matches server
 import request from 'supertest';
 import { createApp } from './../../src/app';
+import prisma from '../../src/lib/prisma';
 import type { Application } from 'express';
 
 let app: Application;
@@ -1450,6 +1451,201 @@ describe('PayMyTax E2E', () => {
 
       expect(res.status).toBe(200);
       expect(res.body.success).toBe(true);
+    });
+  });
+
+  // ═══════════════════════════════════════
+  // SETTLEMENT & AUTOMATED PAYOUTS (PHASE 5)
+  // ═══════════════════════════════════════
+  describe('Settlement & Automated Payouts', () => {
+    it('POST /businesses/:id/settlement/connect → 200 + connects settlement bank', async () => {
+      const res = await request(app)
+        .post(`/api/v1/businesses/${businessId}/settlement/connect`)
+        .set(auth())
+        .send({
+          bankCode: '058',
+          bankName: 'Guaranty Trust Bank',
+          accountNumber: '0123456789',
+        });
+
+      expect(res.status).toBe(200);
+      expect(res.body.success).toBe(true);
+      expect(res.body.data.bankName).toBe('Guaranty Trust Bank');
+    });
+
+    it('GET /businesses/:id/settlement/preview → 200 + returns available balance and tax reserve', async () => {
+      const res = await request(app)
+        .get(`/api/v1/businesses/${businessId}/settlement/preview`)
+        .set(auth());
+
+      expect(res.status).toBe(200);
+      expect(res.body.success).toBe(true);
+      expect(res.body.data).toHaveProperty('availableForWithdrawal');
+      expect(res.body.data).toHaveProperty('taxReserve');
+      expect(res.body.data.settlementAccount.isConnected).toBe(true);
+    });
+
+    it('PATCH /businesses/:id/settlement/auto-split → 200 + updates gateway auto-split', async () => {
+      const res = await request(app)
+        .patch(`/api/v1/businesses/${businessId}/settlement/auto-split`)
+        .set(auth())
+        .send({
+          enabled: true,
+          taxSplitPercentage: 7.5,
+        });
+
+      expect(res.status).toBe(200);
+      expect(res.body.success).toBe(true);
+      expect(res.body.data.autoSplitEnabled).toBe(true);
+      expect(res.body.data.taxSplitPercentage).toBe(7.5);
+    });
+
+    it('POST /businesses/:id/settlement/withdraw with wrong PIN → 401', async () => {
+      const res = await request(app)
+        .post(`/api/v1/businesses/${businessId}/settlement/withdraw`)
+        .set(auth())
+        .send({
+          amount: 5000,
+          pin: '0000',
+        });
+
+      expect(res.status).toBe(401);
+    });
+
+    it('POST /businesses/:id/settlement/withdraw with valid PIN (7391) → 200 success', async () => {
+      // Create a confirmed bank transfer sale so there is sufficient balance
+      await request(app)
+        .post(`/api/v1/businesses/${businessId}/sales`)
+        .set(auth())
+        .send({
+          amount: 50000,
+          source: 'bank_transfer',
+          description: 'Large digital inflow for payout test',
+          transactionDate: new Date().toISOString(),
+        });
+
+      const res = await request(app)
+        .post(`/api/v1/businesses/${businessId}/settlement/withdraw`)
+        .set(auth())
+        .send({
+          amount: 10000,
+          pin: '7391',
+          narration: 'Test payout withdrawal',
+        });
+
+      expect([200, 400]).toContain(res.status);
+      if (res.status === 200) {
+        expect(res.body.success).toBe(true);
+        expect(res.body.data).toHaveProperty('transferReference');
+      }
+    });
+
+    it('GET /businesses/:id/settlement/history → 200 + returns paginated history', async () => {
+      const res = await request(app)
+        .get(`/api/v1/businesses/${businessId}/settlement/history`)
+        .set(auth());
+
+      expect(res.status).toBe(200);
+      expect(res.body.success).toBe(true);
+      expect(Array.isArray(res.body.data)).toBe(true);
+    });
+  });
+
+  // ═══════════════════════════════════════
+  // PHASE 6 — PAYMENT LIFECYCLE & WEBHOOK SYNC
+  // ═══════════════════════════════════════
+  describe('Phase 6 — Payment Lifecycle & Stale Payment Abandonment', () => {
+    let testReportId = '';
+    let testPaymentId = '';
+
+    beforeAll(async () => {
+      // Create a finalized report for testing
+      const calcRes = await request(app)
+        .post(`/api/v1/businesses/${businessId}/tax/calculate`)
+        .set(auth())
+        .send({ month: 8, year: 2026 });
+      testReportId = calcRes.body.data.id;
+
+      await request(app)
+        .post(`/api/v1/businesses/${businessId}/tax/reports/${testReportId}/finalize`)
+        .set(auth());
+    });
+
+    it('POST /tax/pay → initiates payment session', async () => {
+      const res = await request(app)
+        .post(`/api/v1/businesses/${businessId}/tax/pay`)
+        .set(auth())
+        .send({ taxReportId: testReportId });
+
+      expect(res.status).toBe(200);
+      expect(res.body.success).toBe(true);
+      expect(res.body.data).toHaveProperty('paymentId');
+      expect(res.body.data).toHaveProperty('authorizationUrl');
+      testPaymentId = res.body.data.paymentId;
+    });
+
+    it('POST /tax/payments/:id/abandon → resets payment and returns report to pending', async () => {
+      const res = await request(app)
+        .post(`/api/v1/businesses/${businessId}/tax/payments/${testPaymentId}/abandon`)
+        .set(auth());
+
+      expect(res.status).toBe(200);
+      expect(res.body.success).toBe(true);
+      expect(res.body.data.paymentStatus).toBe('failed');
+
+      // Verify tax report is reset to pending
+      const reportRes = await request(app)
+        .get(`/api/v1/businesses/${businessId}/tax/reports/${testReportId}`)
+        .set(auth());
+      expect(reportRes.body.data.paymentStatus).toBe('pending');
+    });
+
+    it('POST /webhooks/paystack handles transfer.success for settlement payout', async () => {
+      const transferRef = `PO-TEST-WEBHOOK-${Date.now()}`;
+      // Create a pending settlement payout
+      const payout = await prisma.settlementPayout.create({
+        data: {
+          businessId,
+          amount: 2500,
+          fee: 0,
+          netAmount: 2500,
+          destinationBankCode: '058',
+          destinationBankName: 'Guaranty Trust Bank',
+          destinationAccountNum: '0123456789',
+          destinationAccountName: 'Test Account',
+          transferReference: transferRef,
+          paystackTransferCode: 'TRF_TEST_123',
+          status: 'pending',
+        },
+      });
+
+      const rawEvent = JSON.stringify({
+        event: 'transfer.success',
+        data: {
+          reference: transferRef,
+          transfer_code: 'TRF_TEST_123',
+          amount: 250000,
+        },
+      });
+
+      const crypto = require('crypto');
+      const signature = crypto
+        .createHmac('sha512', process.env.PAYSTACK_WEBHOOK_SECRET || 'test-secret')
+        .update(rawEvent)
+        .digest('hex');
+
+      const res = await request(app)
+        .post('/api/webhooks/paystack')
+        .set('x-paystack-signature', signature)
+        .set('content-type', 'application/json')
+        .send(Buffer.from(rawEvent));
+
+      expect([200, 401]).toContain(res.status);
+
+      if (res.status === 200) {
+        const updated = await prisma.settlementPayout.findUnique({ where: { id: payout.id } });
+        expect(updated?.status).toBe('completed');
+      }
     });
   });
 

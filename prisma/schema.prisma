@@ -66,6 +66,8 @@ model Business {
   settlementAccountName   String?   @map("settlement_account_name")
   platformCommissionPct   Decimal   @default(0.00) @map("platform_commission_pct") @db.Decimal(5, 2)
   settlementConnectedAt   DateTime? @map("settlement_connected_at")
+  autoSplitEnabled        Boolean   @default(false) @map("auto_split_enabled")
+  taxSplitPercentage      Decimal   @default(7.50) @map("tax_split_percentage") @db.Decimal(5, 2)
   // Set when Paystack sends `customeridentification.failed` or
   // `dedicatedaccount.assign.failed`. Lets the frontend stop polling
   // immediately with an actionable reason instead of spinning until a
@@ -89,6 +91,7 @@ model Business {
   sales                SalesTransaction[]
   payments             TaxPayment[]
   statements           TaxStatement[]
+  settlementPayouts    SettlementPayout[]
 
   @@index([userId])
   @@index([taxId])
@@ -553,4 +556,32 @@ model Session {
   @@index([userId])
   @@index([refreshTokenHash])
   @@map("sessions")
+}
+
+/// Settlement payouts - on-demand balance withdrawals to commercial bank accounts
+model SettlementPayout {
+  id                    String        @id @default(uuid())
+  businessId            String        @map("business_id")
+  amount                Decimal       @map("amount") @db.Decimal(15, 2)
+  fee                   Decimal       @default(0) @map("fee") @db.Decimal(15, 2)
+  netAmount             Decimal       @map("net_amount") @db.Decimal(15, 2)
+  destinationBankCode   String        @map("destination_bank_code")
+  destinationBankName   String        @map("destination_bank_name")
+  destinationAccountNum String        @map("destination_account_num")
+  destinationAccountName String       @map("destination_account_name")
+  transferReference     String        @unique @map("transfer_reference")
+  paystackTransferCode  String?       @map("paystack_transfer_code")
+  status                PaymentStatus @default(pending) @map("payment_status")
+  initiatedAt           DateTime      @default(now()) @map("initiated_at")
+  completedAt           DateTime?     @map("completed_at")
+  failureReason         String?       @map("failure_reason")
+  narration             String?
+  createdAt             DateTime      @default(now()) @map("created_at")
+  updatedAt             DateTime      @updatedAt @map("updated_at")
+  business              Business      @relation(fields: [businessId], references: [id], onDelete: Cascade)
+
+  @@index([businessId])
+  @@index([transferReference])
+  @@index([status])
+  @@map("settlement_payouts")
 }
