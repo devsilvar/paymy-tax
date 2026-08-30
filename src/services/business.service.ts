@@ -7,7 +7,7 @@ import { invalidateOwnershipCache } from '@/lib/ownership';
 import {
   uploadLogoToCloudinary,
   deleteLogoFromCloudinary,
-  ALLOWED_LOGO_MIMES,
+  isAllowedLogoFile,
   MAX_LOGO_BYTES,
 } from '@/lib/cloudinary';
 
@@ -188,13 +188,13 @@ export async function deleteBusiness(userId: string, businessId: string, tx?: Tx
 export async function uploadLogo(
   userId: string,
   businessId: string,
-  file: { buffer: Buffer; mimetype: string; size: number },
+  file: { buffer: Buffer; mimetype: string; size: number; originalname?: string },
 ) {
-  if (!ALLOWED_LOGO_MIMES.has(file.mimetype)) {
+  if (!isAllowedLogoFile(file.mimetype, file.originalname)) {
     throw new AppError(400, 'Only JPEG, PNG, WebP or SVG images are accepted.', 'LOGO_BAD_TYPE');
   }
   if (file.size > MAX_LOGO_BYTES) {
-    throw new AppError(400, 'Logo must be 2 MB or smaller.', 'LOGO_TOO_LARGE');
+    throw new AppError(400, 'Logo must be 5 MB or smaller.', 'LOGO_TOO_LARGE');
   }
 
   const business = await prisma.business.findUnique({ where: { id: businessId } });

@@ -87,7 +87,7 @@ export const errorHandler = (
     switch (err.code) {
       case 'LIMIT_FILE_SIZE':
         errorCode = 'FILE_TOO_LARGE';
-        message = 'Uploaded file is too large. Maximum 2 MB.';
+        message = 'Uploaded file is too large. Maximum 5 MB.';
         break;
       case 'LIMIT_FILE_COUNT':
       case 'LIMIT_UNEXPECTED_FILE':

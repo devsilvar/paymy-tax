@@ -77,6 +77,11 @@ model Business {
   dvaFailedAt             DateTime? @map("dva_failed_at")
   logoUrl                 String?   @map("logo_url")
   logoPublicId            String?   @map("logo_public_id")
+  // Payout account change lock — admin-granted one-time permission (24h expiry)
+  payoutChangePermitted   Boolean   @default(false) @map("payout_change_permitted")
+  payoutChangePermittedAt DateTime? @map("payout_change_permitted_at")
+  payoutChangePermittedBy String?   @map("payout_change_permitted_by")
+  payoutChangeUsedAt      DateTime? @map("payout_change_used_at")
   createdAt               DateTime  @default(now()) @map("created_at")
   updatedAt               DateTime  @updatedAt @map("updated_at")
   merchantId              String    @unique @map("merchant_id")
@@ -95,6 +100,7 @@ model Business {
 
   @@index([userId])
   @@index([taxId])
+  @@index([payoutChangePermittedBy])
   @@map("businesses")
 }
 

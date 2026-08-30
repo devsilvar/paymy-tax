@@ -117,6 +117,12 @@ export const config = {
       ((process.env.PAYSTACK_SECRET_KEY || '').startsWith('sk_test_')
         ? 'test-bank'
         : 'wema-bank'),
+    // DEV/TEST-ONLY fixture switch. When true (or when NODE_ENV=test), failed
+    // Paystack name-enquiry (/bank/resolve) and subaccount-creation calls fall
+    // back to a local fixture instead of surfacing the error — lets devs and
+    // CI exercise settlement connect without real bank resolution.
+    // NEVER set this in production; see paystack.provider.ts shouldUseBankFixture().
+    mockBankResolution: process.env.PAYSTACK_MOCK_BANK_RESOLUTION === 'true',
   },
 
   // DigitalOcean Spaces

@@ -74,6 +74,10 @@ export const connectSettlementSchema = resolveSettlementSchema.extend({
     .min(0, 'Commission cannot be negative')
     .max(100, 'Commission cannot exceed 100%')
     .optional(),
+  pin: z
+    .string()
+    .regex(/^\d{4}$/, 'Transaction PIN must be exactly 4 digits')
+    .optional(),
 });
 
 export type ResolveSettlementInput = z.infer<typeof resolveSettlementSchema>;

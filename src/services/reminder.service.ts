@@ -17,6 +17,7 @@ import { verifyBusinessOwnership } from '@/lib/ownership';
 // invoice_overdue     — sent invoice past its due date
 // payment_successful  — tax payment confirmed (webhook or manual verify)
 // dva_received        — DVA auto-captured a sale
+// payout_change_permitted — admin granted one-time payout account change permission
 
 export type ReminderType =
   | 'tax_deadline'
@@ -29,7 +30,8 @@ export type ReminderType =
   | 'payment_refunded'
   | 'dva_received'
   | 'dva_validation_failed'
-  | 'transaction_needs_verification';
+  | 'transaction_needs_verification'
+  | 'payout_change_permitted';
 
 export type ReminderReferenceType = 'invoice' | 'payment' | 'sales_transaction' | 'business';
 

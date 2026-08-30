@@ -2,6 +2,7 @@ import { Response } from 'express';
 import { asyncHandler } from '@/middleware/errorHandler';
 import { AuthenticatedRequest } from '@/types';
 import * as dvaService from '@/services/dva.service';
+import * as settlementService from '@/services/settlement.service';
 import {
   validateCustomerSchema,
   resolveSettlementSchema,
@@ -97,13 +98,15 @@ export const resolveSettlement = asyncHandler(async (req: AuthenticatedRequest, 
 });
 
 export const connectSettlement = asyncHandler(async (req: AuthenticatedRequest, res: Response) => {
-  const { bankCode, bankName, accountNumber, commissionPct } = connectSettlementSchema.parse(req.body);
+  const { bankCode, bankName, accountNumber, commissionPct, pin } = connectSettlementSchema.parse(req.body);
 
-  const result = await dvaService.connectSettlementBank(req.user!.userId, req.params.businessId, {
+  // Consolidated: DVA settlement now uses the same guarded flow as the main settlement service
+  const result = await settlementService.connectSettlementBank(req.user!.userId, req.params.businessId, {
     bankCode,
     bankName,
     accountNumber,
     commissionPct,
+    pin,
   });
 
   res.status(200).json({ success: true, data: result });

@@ -9,6 +9,7 @@ import {
   auditLogFilterSchema,
 } from '@/validators/admin.validator';
 import * as adminService from '@/services/admin.service';
+import * as settlementService from '@/services/settlement.service';
 
 export const getDashboard = asyncHandler(
   async (_req: AuthenticatedRequest, res: Response) => {
@@ -93,6 +94,102 @@ export const listAuditLogs = asyncHandler(
     res.status(200).json({
       success: true,
       ...result,
+    });
+  }
+);
+
+export const grantPayoutChangePermission = asyncHandler(
+  async (req: AuthenticatedRequest, res: Response) => {
+    const result = await adminService.grantPayoutChangePermission(
+      req.params.businessId,
+      req.user!.userId
+    );
+
+    res.status(200).json({
+      success: true,
+      data: result,
+      message: 'One-time payout change permission granted. Expires in 24 hours.',
+    });
+  }
+);
+
+export const revokePayoutChangePermission = asyncHandler(
+  async (req: AuthenticatedRequest, res: Response) => {
+    const result = await adminService.revokePayoutChangePermission(
+      req.params.businessId,
+      req.user!.userId
+    );
+
+    res.status(200).json({
+      success: true,
+      data: result,
+      message: 'Payout change permission revoked successfully.',
+    });
+  }
+);
+
+
+// ═══════════════════════════════════════════════════════════════════════════
+// ADMIN: Withdrawal Request Management (NEW-7 v2)
+// ═══════════════════════════════════════════════════════════════════════════
+
+export const listWithdrawalRequests = asyncHandler(
+  async (req: AuthenticatedRequest, res: Response) => {
+    const status = req.query.status as 'pending' | 'processing' | 'completed' | 'failed' | undefined;
+    const page = req.query.page ? Number(req.query.page) : undefined;
+    const limit = req.query.limit ? Number(req.query.limit) : undefined;
+
+    const result = await settlementService.adminListWithdrawalRequests({
+      status,
+      page,
+      limit,
+    });
+
+    res.status(200).json({
+      success: true,
+      ...result,
+    });
+  }
+);
+
+export const approveWithdrawalRequest = asyncHandler(
+  async (req: AuthenticatedRequest, res: Response) => {
+    const result = await settlementService.adminApproveWithdrawal(
+      req.user!.userId,
+      req.params.id
+    );
+
+    res.status(200).json({
+      success: true,
+      data: result,
+      message: 'Withdrawal request approved and transfer initiated.',
+    });
+  }
+);
+
+export const rejectWithdrawalRequest = asyncHandler(
+  async (req: AuthenticatedRequest, res: Response) => {
+    const { reason } = req.body;
+    if (!reason || typeof reason !== 'string' || reason.trim().length < 3) {
+      return res.status(400).json({
+        success: false,
+        error: {
+          code: 'VALIDATION_ERROR',
+          message: 'Rejection reason is required (minimum 3 characters)',
+        },
+      });
+    }
+
+    const result = await settlementService.adminRejectWithdrawal(
+      req.user!.userId,
+      req.params.id,
+      reason.trim()
+    );
+
+    res.status(200).json({
+      success: true,
+      data: result,
+      message: 'Withdrawal request rejected.',
     });
   }
 );

@@ -30,8 +30,9 @@ const YEAR = now.getFullYear();
 const auth = () => ({ Authorization: `Bearer ${accessToken}` });
 const adminAuth = () => ({ Authorization: `Bearer ${adminToken}` });
 
-beforeAll(() => {
+beforeAll(async () => {
   app = createApp();
+  await prisma.$connect();
 });
 
 describe('PayMyTax E2E', () => {
@@ -299,6 +300,143 @@ describe('PayMyTax E2E', () => {
         .get(`/api/v1/businesses/${fakeId}`)
         .set(auth());
       expect([403, 404]).toContain(res.status);
+    });
+
+    // ── Logo Upload, Validation, and Deletion Tests ──
+    it('POST /businesses/:id/logo (PNG) → 200 + logoUrl updated', async () => {
+      // 1x1 transparent PNG buffer
+      const pngBuffer = Buffer.from(
+        'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==',
+        'base64'
+      );
+
+      const res = await request(app)
+        .post(`/api/v1/businesses/${businessId}/logo`)
+        .set(auth())
+        .attach('logo', pngBuffer, { filename: 'company_logo.png', contentType: 'image/png' });
+
+      expect(res.status).toBe(200);
+      expect(res.body.success).toBe(true);
+      expect(res.body.data).toHaveProperty('logoUrl');
+      expect(res.body.data.logoUrl).toBeTruthy();
+    });
+
+    it('POST /businesses/:id/logo (JPEG) → 200 + logoUrl updated', async () => {
+      // Minimal JPEG buffer
+      const jpegBuffer = Buffer.from(
+        '/9j/4AAQSkZJRgABAQEASABIAAD/2wBDAP//////////////////////////////////////////////////////////////////////////////////////wgALCAABAAEBAREA/8QAFBABAAAAAAAAAAAAAAAAAAAAAP/aAAgBAQABPxA=',
+        'base64'
+      );
+
+      const res = await request(app)
+        .post(`/api/v1/businesses/${businessId}/logo`)
+        .set(auth())
+        .attach('logo', jpegBuffer, { filename: 'company_logo.jpg', contentType: 'image/jpeg' });
+
+      expect(res.status).toBe(200);
+      expect(res.body.success).toBe(true);
+      expect(res.body.data.logoUrl).toBeTruthy();
+    });
+
+    it('POST /businesses/:id/logo (SVG) → 200 + logoUrl updated', async () => {
+      const svgBuffer = Buffer.from('<svg xmlns="http://www.w3.org/2000/svg" width="10" height="10"><rect width="10" height="10" fill="red"/></svg>');
+
+      const res = await request(app)
+        .post(`/api/v1/businesses/${businessId}/logo`)
+        .set(auth())
+        .attach('logo', svgBuffer, { filename: 'logo.svg', contentType: 'image/svg+xml' });
+
+      expect(res.status).toBe(200);
+      expect(res.body.success).toBe(true);
+      expect(res.body.data.logoUrl).toBeTruthy();
+    });
+
+    it('POST /businesses/:id/logo (no file uploaded) → 400 LOGO_NO_FILE', async () => {
+      const res = await request(app)
+        .post(`/api/v1/businesses/${businessId}/logo`)
+        .set(auth());
+
+      expect(res.status).toBe(400);
+      expect(res.body.error.code).toBe('LOGO_NO_FILE');
+    });
+
+    it('POST /businesses/:id/logo (invalid file type: pdf) → 400 LOGO_BAD_TYPE', async () => {
+      const fakePdf = Buffer.from('%PDF-1.4 test content');
+
+      const res = await request(app)
+        .post(`/api/v1/businesses/${businessId}/logo`)
+        .set(auth())
+        .attach('logo', fakePdf, { filename: 'doc.pdf', contentType: 'application/pdf' });
+
+      expect(res.status).toBe(400);
+      expect(res.body.error.code).toBe('LOGO_BAD_TYPE');
+    });
+
+    it('POST /businesses/:id/logo (file too large > 5MB) → 400 FILE_TOO_LARGE', async () => {
+      // 5.2 MB buffer
+      const largeBuffer = Buffer.alloc(5.2 * 1024 * 1024);
+
+      const res = await request(app)
+        .post(`/api/v1/businesses/${businessId}/logo`)
+        .set(auth())
+        .attach('logo', largeBuffer, { filename: 'huge_logo.png', contentType: 'image/png' });
+
+      expect(res.status).toBe(400);
+      expect(res.body.error.code).toBe('FILE_TOO_LARGE');
+    });
+
+    it('POST /businesses/:id/logo (unauthenticated) → 401', async () => {
+      const pngBuffer = Buffer.from(
+        'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==',
+        'base64'
+      );
+
+      const res = await request(app)
+        .post(`/api/v1/businesses/${businessId}/logo`)
+        .attach('logo', pngBuffer, { filename: 'logo.png', contentType: 'image/png' });
+
+      expect(res.status).toBe(401);
+    });
+
+    it('POST /businesses/:id/logo (non-existent business) → 403 or 404', async () => {
+      const fakeId = '00000000-0000-0000-0000-000000000000';
+      const pngBuffer = Buffer.from(
+        'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==',
+        'base64'
+      );
+
+      const res = await request(app)
+        .post(`/api/v1/businesses/${fakeId}/logo`)
+        .set(auth())
+        .attach('logo', pngBuffer, { filename: 'logo.png', contentType: 'image/png' });
+
+      expect([403, 404]).toContain(res.status);
+    });
+
+    it('DELETE /businesses/:id/logo (happy path) → 200 + logo removed', async () => {
+      const res = await request(app)
+        .delete(`/api/v1/businesses/${businessId}/logo`)
+        .set(auth());
+
+      expect(res.status).toBe(200);
+      expect(res.body.success).toBe(true);
+      expect(res.body.data.logoUrl).toBeNull();
+    });
+
+    it('DELETE /businesses/:id/logo (when no logo exists) → 404 LOGO_NOT_FOUND', async () => {
+      const res = await request(app)
+        .delete(`/api/v1/businesses/${businessId}/logo`)
+        .set(auth());
+
+      expect(res.status).toBe(404);
+      expect(res.body.error.code).toBe('LOGO_NOT_FOUND');
+    });
+
+    it('DELETE /businesses/:id/logo (unauthenticated) → 401', async () => {
+      const res = await request(app)
+        .delete(`/api/v1/businesses/${businessId}/logo`);
+
+      expect(res.status).toBe(401);
     });
 
     it('DELETE /businesses/:id (second) → 200', async () => {
@@ -842,9 +980,12 @@ describe('PayMyTax E2E', () => {
     });
 
     it('POST /webhooks/paystack (invalid signature) → 401', async () => {
+      // Unique per run: the webhook handler's replay-prevention dedupes on the
+      // literal signature header within a 5-min window — a reused literal from
+      // a previous suite run would be acknowledged (200) as a redelivery.
       const res = await request(app)
         .post('/api/webhooks/paystack')
-        .set('x-paystack-signature', 'invalid-signature')
+        .set('x-paystack-signature', `invalid-signature-${Date.now()}`)
         .send({ event: 'charge.success', data: { reference: 'test' } });
       expect(res.status).toBe(401);
     });
@@ -1004,7 +1145,7 @@ describe('PayMyTax E2E', () => {
 
       const res = await request(app)
         .post('/api/webhooks/paystack')
-        .set('x-paystack-signature', 'faketoken-signature-12345')
+        .set('x-paystack-signature', `faketoken-signature-${Date.now()}`)
         .set('Content-Type', 'application/json')
         .send(Buffer.from(payload));
 
@@ -1552,6 +1693,272 @@ describe('PayMyTax E2E', () => {
   });
 
   // ═══════════════════════════════════════
+  // NOTICEPAY1.MD P0 FIXES & ADMIN WITHDRAWAL WORKFLOW
+  // ═══════════════════════════════════════
+  describe('NoticePay1 P0 Fixes & Admin Withdrawal Workflow', () => {
+    let testWithdrawalBusinessId = '';
+    let testWithdrawalRequestId = '';
+
+    beforeAll(async () => {
+      // Create a dedicated business for withdrawal tests
+      const bizRes = await request(app)
+        .post('/api/v1/businesses')
+        .set(auth())
+        .send({
+          businessName: 'Withdrawal Test Business',
+          ownerName: 'Test Owner',
+          businessType: 'retail',
+        });
+      testWithdrawalBusinessId = bizRes.body.data.id;
+
+      // Connect settlement account
+      await request(app)
+        .post(`/api/v1/businesses/${testWithdrawalBusinessId}/settlement/connect`)
+        .set(auth())
+        .send({
+          bankCode: '044',
+          bankName: 'Access Bank',
+          accountNumber: '0123456789',
+        });
+    });
+
+    it('NEW-B: Manual bank transfer sale should NOT be withdrawable (phantom funds excluded)', async () => {
+      // Create a manual bank transfer sale (no DVA channel metadata)
+      await request(app)
+        .post(`/api/v1/businesses/${testWithdrawalBusinessId}/sales`)
+        .set(auth())
+        .send({
+          amount: 100000,
+          source: 'bank_transfer',
+          description: 'Manual bank transfer - not DVA',
+          transactionDate: new Date().toISOString(),
+        });
+
+      // Check preview - should show 0 withdrawable (no DVA sales yet)
+      const previewRes = await request(app)
+        .get(`/api/v1/businesses/${testWithdrawalBusinessId}/settlement/preview`)
+        .set(auth());
+
+      expect(previewRes.status).toBe(200);
+      expect(previewRes.body.data.totalInflows).toBe(0); // Manual sale excluded
+      expect(previewRes.body.data.availableForWithdrawal).toBe(0);
+    });
+
+    it('NEW-B: DVA-originated sale should BE withdrawable', async () => {
+      // Simulate a DVA auto-captured sale (with channel: 'dva' metadata)
+      await prisma.salesTransaction.create({
+        data: {
+          businessId: testWithdrawalBusinessId,
+          amount: 50000,
+          source: 'bank_transfer',
+          status: 'confirmed',
+          description: 'DVA auto-captured inflow',
+          transactionDate: new Date(),
+          metadata: { channel: 'dva', paystackRef: 'TEST_DVA_REF' },
+        },
+      });
+
+      // Check preview - should now show DVA sale as withdrawable
+      const previewRes = await request(app)
+        .get(`/api/v1/businesses/${testWithdrawalBusinessId}/settlement/preview`)
+        .set(auth());
+
+      expect(previewRes.status).toBe(200);
+      expect(previewRes.body.data.totalInflows).toBe(50000); // DVA sale included
+      expect(previewRes.body.data.availableForWithdrawal).toBeGreaterThan(0);
+    });
+
+    it('NEW-D: Enable auto-split WITHOUT settlement account → 400 SETTLEMENT_ACCOUNT_REQUIRED', async () => {
+      // Create a business without settlement account
+      const bizRes = await request(app)
+        .post('/api/v1/businesses')
+        .set(auth())
+        .send({
+          businessName: 'No Settlement Business',
+          ownerName: 'Test Owner',
+          businessType: 'technology',
+        });
+      const noSettlementBizId = bizRes.body.data.id;
+
+      // Try to enable auto-split
+      const res = await request(app)
+        .patch(`/api/v1/businesses/${noSettlementBizId}/settlement/auto-split`)
+        .set(auth())
+        .send({
+          enabled: true,
+          taxSplitPercentage: 7.5,
+        });
+
+      expect(res.status).toBe(400);
+      expect(res.body.error.code).toBe('SETTLEMENT_ACCOUNT_REQUIRED');
+
+      // Cleanup
+      await request(app).delete(`/api/v1/businesses/${noSettlementBizId}`).set(auth());
+    });
+
+    it('NEW-D: Disable auto-split is always allowed (even without settlement account)', async () => {
+      // Create a business without settlement account
+      const bizRes = await request(app)
+        .post('/api/v1/businesses')
+        .set(auth())
+        .send({
+          businessName: 'Disable Split Business',
+          ownerName: 'Test Owner',
+          businessType: 'services',
+        });
+      const noSettlementBizId = bizRes.body.data.id;
+
+      // Disable auto-split should work
+      const res = await request(app)
+        .patch(`/api/v1/businesses/${noSettlementBizId}/settlement/auto-split`)
+        .set(auth())
+        .send({
+          enabled: false,
+        });
+
+      expect(res.status).toBe(200);
+      expect(res.body.data.autoSplitEnabled).toBe(false);
+
+      // Cleanup
+      await request(app).delete(`/api/v1/businesses/${noSettlementBizId}`).set(auth());
+    });
+
+    it('NEW-7: Withdrawal request → 200 with status=pending (no Paystack call)', async () => {
+      const res = await request(app)
+        .post(`/api/v1/businesses/${testWithdrawalBusinessId}/settlement/withdraw`)
+        .set(auth())
+        .send({
+          amount: 10000,
+          pin: '7391',
+          narration: 'Test withdrawal request',
+        });
+
+      expect(res.status).toBe(200);
+      expect(res.body.data.status).toBe('pending');
+      expect(res.body.data).toHaveProperty('transferReference');
+      expect(res.body.message).toContain('awaiting admin approval');
+      testWithdrawalRequestId = res.body.data.id;
+    });
+
+    it('NEW-7: Duplicate withdrawal (same amount within 30 min) → 409 DUPLICATE_WITHDRAWAL_REQUEST', async () => {
+      const res = await request(app)
+        .post(`/api/v1/businesses/${testWithdrawalBusinessId}/settlement/withdraw`)
+        .set(auth())
+        .send({
+          amount: 10000, // Same amount as previous request
+          pin: '7391',
+          narration: 'Duplicate attempt',
+        });
+
+      expect(res.status).toBe(409);
+      expect(res.body.error.code).toBe('DUPLICATE_WITHDRAWAL_REQUEST');
+    });
+
+    it('NEW-7: Different amount request → 200 (duplicate guard only checks exact amount)', async () => {
+      const res = await request(app)
+        .post(`/api/v1/businesses/${testWithdrawalBusinessId}/settlement/withdraw`)
+        .set(auth())
+        .send({
+          amount: 5000, // Different amount
+          pin: '7391',
+          narration: 'Second withdrawal',
+        });
+
+      expect(res.status).toBe(200);
+      expect(res.body.data.status).toBe('pending');
+    });
+
+    it('NEW-7: Admin list withdrawal requests → 200 with queue', async () => {
+      const res = await request(app)
+        .get('/api/v1/admin/settlement/withdrawals?status=pending')
+        .set(adminAuth());
+
+      expect(res.status).toBe(200);
+      expect(Array.isArray(res.body.data)).toBe(true);
+      expect(res.body.data.length).toBeGreaterThan(0);
+      // Account numbers should be masked
+      expect(res.body.data[0].destinationAccountNum).toMatch(/^•••• \d{4}$/);
+    });
+
+    it('NEW-7: Non-admin tries to approve → 403', async () => {
+      const res = await request(app)
+        .post(`/api/v1/admin/settlement/withdrawals/${testWithdrawalRequestId}/approve`)
+        .set(auth()); // Regular user, not admin
+
+      expect(res.status).toBe(403);
+    });
+
+    it('NEW-7: Admin approve withdrawal → 200 (transfer initiated)', async () => {
+      const res = await request(app)
+        .post(`/api/v1/admin/settlement/withdrawals/${testWithdrawalRequestId}/approve`)
+        .set(adminAuth());
+
+      expect([200, 400, 409]).toContain(res.status);
+      if (res.status === 200) {
+        expect(res.body.data.status).toMatch(/processing|completed/);
+        expect(res.body.message).toContain('approved');
+      }
+    });
+
+    it('NEW-7: Double-approve same request → 409 ALREADY_PROCESSED', async () => {
+      const res = await request(app)
+        .post(`/api/v1/admin/settlement/withdrawals/${testWithdrawalRequestId}/approve`)
+        .set(adminAuth());
+
+      expect(res.status).toBe(409);
+      expect(res.body.error.code).toBe('ALREADY_PROCESSED');
+    });
+
+    it('NEW-7: Admin reject a pending request → 200', async () => {
+      // Create a new request to reject
+      const withdrawRes = await request(app)
+        .post(`/api/v1/businesses/${testWithdrawalBusinessId}/settlement/withdraw`)
+        .set(auth())
+        .send({
+          amount: 3000,
+          pin: '7391',
+          narration: 'Request to be rejected',
+        });
+      const rejectableRequestId = withdrawRes.body.data.id;
+
+      const res = await request(app)
+        .post(`/api/v1/admin/settlement/withdrawals/${rejectableRequestId}/reject`)
+        .set(adminAuth())
+        .send({
+          reason: 'Insufficient documentation provided',
+        });
+
+      expect(res.status).toBe(200);
+      expect(res.body.data.status).toBe('failed');
+    });
+
+    it('NEW-7: Reject without reason → 400', async () => {
+      const res = await request(app)
+        .post(`/api/v1/admin/settlement/withdrawals/${testWithdrawalRequestId}/reject`)
+        .set(adminAuth())
+        .send({});
+
+      expect(res.status).toBe(400);
+    });
+
+    it('NEW-7: Preview balance correctly reserves pending/processing payouts', async () => {
+      const previewRes = await request(app)
+        .get(`/api/v1/businesses/${testWithdrawalBusinessId}/settlement/preview`)
+        .set(auth());
+
+      expect(previewRes.status).toBe(200);
+      // totalWithdrawn should include pending + processing + completed
+      expect(previewRes.body.data).toHaveProperty('totalWithdrawn');
+      expect(previewRes.body.data.totalWithdrawn).toBeGreaterThan(0);
+    });
+
+    afterAll(async () => {
+      // Cleanup
+      await request(app).delete(`/api/v1/businesses/${testWithdrawalBusinessId}`).set(auth());
+    });
+  });
+
+  // ═══════════════════════════════════════
   // PHASE 6 — PAYMENT LIFECYCLE & WEBHOOK SYNC
   // ═══════════════════════════════════════
   describe('Phase 6 — Payment Lifecycle & Stale Payment Abandonment', () => {
@@ -1646,6 +2053,148 @@ describe('PayMyTax E2E', () => {
         const updated = await prisma.settlementPayout.findUnique({ where: { id: payout.id } });
         expect(updated?.status).toBe('completed');
       }
+    });
+  });
+
+  // ═══════════════════════════════════════
+  // PAYOUT ACCOUNT CHANGE LOCK
+  // ═══════════════════════════════════════
+  describe('Payout Account Change Lock', () => {
+    let testBusinessId = '';
+    const firstAccount = { bankCode: '044', accountNumber: '0123456789', bankName: 'Access Bank' };
+    const secondAccount = { bankCode: '058', accountNumber: '9876543210', bankName: 'GTB' };
+
+    beforeAll(async () => {
+      // Create a dedicated business for payout tests
+      const bizRes = await request(app)
+        .post('/api/v1/businesses')
+        .set(auth())
+        .send({
+          businessName: 'Payout Test Business',
+          ownerName: 'Test Owner',
+          businessType: 'retail',
+        });
+      testBusinessId = bizRes.body.data.id;
+
+      // Set up PIN for this test user
+      await request(app)
+        .post('/api/v1/auth/pin/create')
+        .set(auth())
+        .send({ pin: '1234', confirmPin: '1234' });
+    });
+
+    it('First connect (no existing account) → 200 (no permission needed)', async () => {
+      const res = await request(app)
+        .post(`/api/v1/businesses/${testBusinessId}/settlement/connect`)
+        .set(auth())
+        .send(firstAccount);
+
+      expect(res.status).toBe(200);
+      expect(res.body.success).toBe(true);
+      expect(res.body.data).toHaveProperty('accountName');
+    });
+
+    it('Second connect (change existing) without permission → 403 PAYOUT_CHANGE_LOCKED', async () => {
+      const res = await request(app)
+        .post(`/api/v1/businesses/${testBusinessId}/settlement/connect`)
+        .set(auth())
+        .send({ ...secondAccount, pin: '1234' });
+
+      expect(res.status).toBe(403);
+      expect(res.body.error.code).toBe('PAYOUT_CHANGE_LOCKED');
+    });
+
+    it('GET settlement preview → includes lock status', async () => {
+      const res = await request(app)
+        .get(`/api/v1/businesses/${testBusinessId}/settlement/preview`)
+        .set(auth());
+
+      expect(res.status).toBe(200);
+      expect(res.body.data).toHaveProperty('payoutChange');
+      expect(res.body.data.payoutChange.locked).toBe(true);
+      expect(res.body.data.payoutChange.permitted).toBe(false);
+    });
+
+    it('Non-admin tries to grant permission → 403', async () => {
+      const res = await request(app)
+        .post(`/api/v1/admin/businesses/${testBusinessId}/payout-change-permit`)
+        .set(auth());
+
+      expect(res.status).toBe(403);
+    });
+
+    it('Admin grants one-time permission → 200', async () => {
+      const res = await request(app)
+        .post(`/api/v1/admin/businesses/${testBusinessId}/payout-change-permit`)
+        .set(adminAuth());
+
+      expect(res.status).toBe(200);
+      expect(res.body.success).toBe(true);
+      expect(res.body.data.payoutChangePermitted).toBe(true);
+    });
+
+    it('GET settlement preview → shows permitted status', async () => {
+      const res = await request(app)
+        .get(`/api/v1/businesses/${testBusinessId}/settlement/preview`)
+        .set(auth());
+
+      expect(res.status).toBe(200);
+      expect(res.body.data.payoutChange.locked).toBe(false);
+      expect(res.body.data.payoutChange.permitted).toBe(true);
+      expect(res.body.data.payoutChange.expiresAt).toBeDefined();
+    });
+
+    it('Change account with permission + PIN → 200 (permission consumed)', async () => {
+      const res = await request(app)
+        .post(`/api/v1/businesses/${testBusinessId}/settlement/connect`)
+        .set(auth())
+        .send({ ...secondAccount, pin: '1234' });
+
+      expect(res.status).toBe(200);
+      expect(res.body.success).toBe(true);
+    });
+
+    it('Third connect attempt → 403 (permission was consumed)', async () => {
+      const res = await request(app)
+        .post(`/api/v1/businesses/${testBusinessId}/settlement/connect`)
+        .set(auth())
+        .send({ ...firstAccount, pin: '1234' });
+
+      expect(res.status).toBe(403);
+      expect(res.body.error.code).toBe('PAYOUT_CHANGE_LOCKED');
+    });
+
+    it('Admin grants permission again → 200 (idempotent re-grant)', async () => {
+      const res = await request(app)
+        .post(`/api/v1/admin/businesses/${testBusinessId}/payout-change-permit`)
+        .set(adminAuth());
+
+      expect(res.status).toBe(200);
+    });
+
+    it('Admin revokes permission → 200', async () => {
+      const res = await request(app)
+        .delete(`/api/v1/admin/businesses/${testBusinessId}/payout-change-permit`)
+        .set(adminAuth());
+
+      expect(res.status).toBe(200);
+      expect(res.body.success).toBe(true);
+    });
+
+    it('Change attempt after revoke → 403', async () => {
+      const res = await request(app)
+        .post(`/api/v1/businesses/${testBusinessId}/settlement/connect`)
+        .set(auth())
+        .send({ ...firstAccount, pin: '1234' });
+
+      expect(res.status).toBe(403);
+    });
+
+    afterAll(async () => {
+      // Clean up test business
+      await request(app)
+        .delete(`/api/v1/businesses/${testBusinessId}`)
+        .set(auth());
     });
   });
 

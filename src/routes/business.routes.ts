@@ -2,7 +2,7 @@ import { Router } from 'express';
 import multer from 'multer';
 import { authenticate } from '@/middleware/auth';
 import { AppError } from '@/middleware/errorHandler';
-import { ALLOWED_LOGO_MIMES, MAX_LOGO_BYTES } from '@/lib/cloudinary';
+import { isAllowedLogoFile, MAX_LOGO_BYTES } from '@/lib/cloudinary';
 import * as businessController from '@/controllers/business.controller';
 
 const router = Router();
@@ -14,7 +14,7 @@ const logoUpload = multer({
   storage: multer.memoryStorage(),
   limits: { fileSize: MAX_LOGO_BYTES, files: 1 },
   fileFilter: (_req, file, cb) => {
-    if (!ALLOWED_LOGO_MIMES.has(file.mimetype)) {
+    if (!isAllowedLogoFile(file.mimetype, file.originalname)) {
       return cb(
         new AppError(400, 'Only JPEG, PNG, WebP or SVG images are accepted.', 'LOGO_BAD_TYPE'),
       );

@@ -1,5 +1,6 @@
 import { config } from '@/config';
 import { AppError } from '@/middleware/errorHandler';
+import logger from '@/lib/logger';
 import {
   PaymentProvider,
   InitializePaymentParams,
@@ -39,6 +40,38 @@ export class PaystackProvider implements PaymentProvider {
 
   constructor() {
     this.secretKey = config.paystack.secretKey;
+  }
+
+  /**
+   * Whether failed name-enquiry / subaccount calls may fall back to a local
+   * test fixture. Strictly environment-gated:
+   *   - NODE_ENV=test  → CI/e2e never needs real bank resolution.
+   *   - PAYSTACK_MOCK_BANK_RESOLUTION=true → explicit local-dev opt-in.
+   * There is deliberately NO input-shape gate (the old `0123…` prefix bypass
+   * leaked into production and let unverified settlement accounts connect).
+   * Production without this gate either surfaces the real Paystack error or —
+   * if the deployment is missing its secret key — a loud PAYSTACK_NOT_CONFIGURED.
+   */
+  private shouldUseBankFixture(): boolean {
+    return config.app.env === 'test' || config.paystack.mockBankResolution;
+  }
+
+  /**
+   * Fixture result for resolveAccount — only ever returned when
+   * shouldUseBankFixture() is true. Logs a warning so accidental fixture use
+   * in a non-test environment is visible in logs.
+   */
+  private resolveAccountFixture(accountNumber: string, bankCode: string): ResolveAccountResult {
+    logger.warn('Paystack bank fixture used — no real name enquiry performed', {
+      op: 'resolveAccount',
+      env: config.app.env,
+      accountLast4: accountNumber.slice(-4),
+    });
+    return {
+      accountNumber,
+      accountName: 'TEST COMMERCIAL ENTERPRISE',
+      bankCode,
+    };
   }
 
   private async request<T = any>(
@@ -317,12 +350,18 @@ export class PaystackProvider implements PaymentProvider {
         bankCode: data.bank_code || bankCode,
       };
     } catch (err) {
-      if (config.app.env === 'test' || accountNumber.startsWith('0123') || !this.secretKey) {
-        return {
-          accountNumber,
-          accountName: 'TEST COMMERCIAL ENTERPRISE',
-          bankCode,
-        };
+      if (this.shouldUseBankFixture()) {
+        return this.resolveAccountFixture(accountNumber, bankCode);
+      }
+      // Production (or dev without the opt-in flag): never fake a resolved
+      // name. A missing secret key means this deployment cannot verify bank
+      // accounts at all — fail loudly instead of pretending success.
+      if (!this.secretKey) {
+        throw new AppError(
+          503,
+          'Paystack is not configured on this deployment (missing PAYSTACK_SECRET_KEY). Bank account verification is unavailable.',
+          'PAYSTACK_NOT_CONFIGURED',
+        );
       }
       throw err;
     }
@@ -344,10 +383,25 @@ export class PaystackProvider implements PaymentProvider {
         subaccountCode: data.subaccount_code,
       };
     } catch (err) {
-      if (config.app.env === 'test' || params.accountNumber.startsWith('0123') || !this.secretKey) {
+      if (this.shouldUseBankFixture()) {
+        logger.warn('Paystack bank fixture used — no real subaccount created', {
+          op: 'createSubaccount',
+          env: config.app.env,
+          accountLast4: params.accountNumber.slice(-4),
+        });
         return {
           subaccountCode: `SUB_test_${Math.random().toString(36).slice(2, 8)}`,
         };
+      }
+      // Same contract as resolveAccount: production never gets a fake
+      // subaccount code — a settlement destination must be provisioned by the
+      // real gateway or the connect attempt must fail visibly.
+      if (!this.secretKey) {
+        throw new AppError(
+          503,
+          'Paystack is not configured on this deployment (missing PAYSTACK_SECRET_KEY). Settlement account connection is unavailable.',
+          'PAYSTACK_NOT_CONFIGURED',
+        );
       }
       throw err;
     }

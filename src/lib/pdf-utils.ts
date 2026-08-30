@@ -11,6 +11,17 @@ import logger from './logger';
 export async function fetchLogoForPdf(logoUrl: string): Promise<Buffer | null> {
   if (!logoUrl) return null;
 
+  if (logoUrl.startsWith('data:')) {
+    try {
+      const parts = logoUrl.split(',');
+      const base64Data = parts[1] || parts[0];
+      return Buffer.from(base64Data, 'base64');
+    } catch (err) {
+      logger.warn('Failed to parse base64 logo for PDF', { error: err });
+      return null;
+    }
+  }
+
   const url = getTransformedLogoUrl(logoUrl, 'pdf');
 
   return new Promise((resolve) => {

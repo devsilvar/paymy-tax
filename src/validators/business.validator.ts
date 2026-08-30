@@ -22,7 +22,7 @@ export const updateBusinessSchema = z.object({
   state: z.string().max(100).trim().optional(),
   defaultProfitMargin: z.number().min(0).max(100).optional(),
   taxReminderDay: z.number().int().min(1).max(28).optional(),
-  logoUrl: z.string().url().nullable().optional(),
+  logoUrl: z.string().nullable().optional(),
   logoPublicId: z.string().nullable().optional(),
 });
 

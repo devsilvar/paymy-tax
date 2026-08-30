@@ -307,3 +307,161 @@ export async function listAuditLogs(
     },
   };
 }
+
+/**
+ * Grants one-time payout account change permission (24h expiry)
+ * 
+ * Idempotent: re-grant refreshes timestamp
+ */
+export async function grantPayoutChangePermission(
+  businessId: string,
+  adminId: string,
+  tx?: TxClient
+) {
+  const db = tx ?? prisma;
+
+  const business = await db.business.findUnique({
+    where: { id: businessId },
+    select: {
+      id: true,
+      businessName: true,
+      settlementAccountNumber: true,
+      userId: true,
+    },
+  });
+
+  if (!business) {
+    throw new AppError(404, 'Business not found', 'BUSINESS_NOT_FOUND');
+  }
+
+  if (!business.settlementAccountNumber) {
+    throw new AppError(
+      400,
+      'No payout account connected yet. Nothing to lock or unlock.',
+      'NO_PAYOUT_ACCOUNT'
+    );
+  }
+
+  const now = new Date();
+  const updatedBusiness = await db.business.update({
+    where: { id: businessId },
+    data: {
+      payoutChangePermitted: true,
+      payoutChangePermittedAt: now,
+      payoutChangePermittedBy: adminId,
+      // Clear used timestamp if re-granting after a previous use
+      payoutChangeUsedAt: null,
+    },
+    select: {
+      id: true,
+      businessName: true,
+      payoutChangePermitted: true,
+      payoutChangePermittedAt: true,
+      payoutChangePermittedBy: true,
+    },
+  });
+
+  logAudit({
+    userId: adminId,
+    businessId,
+    action: 'admin.payout_change_permitted',
+    resourceType: 'business',
+    resourceId: businessId,
+    newData: {
+      permitted: true,
+      expiresAt: new Date(now.getTime() + 24 * 60 * 60 * 1000),
+    },
+  }, tx);
+
+  // Fire reminder notification (post-transaction, fire-and-forget)
+  if (!tx) {
+    // Only fire outside transaction to avoid blocking
+    const { createReminderOnce } = await import('@/services/reminder.service');
+    createReminderOnce({
+      businessId,
+      reminderType: 'payout_change_permitted',
+      scheduledDate: now,
+      referenceType: 'business',
+      referenceId: businessId,
+      updateMessageOnDup: true,
+      message: 'Support approved a one-time payout account change. You can update it now from Account → Payout settings. This permission expires in 24 hours.',
+    }).catch((err) => {
+      // Fire-and-forget — log but don't fail the grant
+      const logger = require('@/lib/logger').default;
+      logger.error('Failed to create payout permission reminder', {
+        businessId,
+        err: err instanceof Error ? err.message : err,
+      });
+    });
+  }
+
+  return updatedBusiness;
+}
+
+/**
+ * Revokes an unused payout change permission
+ */
+export async function revokePayoutChangePermission(
+  businessId: string,
+  adminId: string,
+  tx?: TxClient
+) {
+  const db = tx ?? prisma;
+
+  const business = await db.business.findUnique({
+    where: { id: businessId },
+    select: {
+      id: true,
+      businessName: true,
+      payoutChangePermitted: true,
+      payoutChangeUsedAt: true,
+    },
+  });
+
+  if (!business) {
+    throw new AppError(404, 'Business not found', 'BUSINESS_NOT_FOUND');
+  }
+
+  if (!business.payoutChangePermitted) {
+    // Already revoked or never granted — idempotent
+    return {
+      id: business.id,
+      businessName: business.businessName,
+      payoutChangePermitted: false,
+    };
+  }
+
+  if (business.payoutChangeUsedAt) {
+    throw new AppError(
+      400,
+      'Permission was already consumed. Cannot revoke.',
+      'PERMISSION_ALREADY_USED'
+    );
+  }
+
+  const updatedBusiness = await db.business.update({
+    where: { id: businessId },
+    data: {
+      payoutChangePermitted: false,
+      payoutChangePermittedAt: null,
+      payoutChangePermittedBy: null,
+    },
+    select: {
+      id: true,
+      businessName: true,
+      payoutChangePermitted: true,
+    },
+  });
+
+  logAudit({
+    userId: adminId,
+    businessId,
+    action: 'admin.payout_change_permit_revoked',
+    resourceType: 'business',
+    resourceId: businessId,
+    oldData: { permitted: true },
+    newData: { permitted: false },
+  }, tx);
+
+  return updatedBusiness;
+}

@@ -838,76 +838,9 @@ export async function resolveSettlementAccount(
   };
 }
 
-export async function connectSettlementBank(
-  userId: string,
-  businessId: string,
-  params: { bankCode: string; bankName: string; accountNumber: string; commissionPct?: number },
-) {
-  const business = await verifyBusinessOwnership(userId, businessId);
-  const provider = getPaymentProvider();
-
-  // Re-resolve server-side (never trust client-supplied name)
-  const { accountName } = await provider.resolveAccount(params.accountNumber, params.bankCode);
-
-  const { subaccountCode } = await provider.createSubaccount({
-    businessName: business.businessName,
-    bankCode: params.bankCode,
-    accountNumber: params.accountNumber,
-    percentageCharge: params.commissionPct ?? 0,
-  });
-
-  await prisma.business.update({
-    where: { id: businessId },
-    data: {
-      paystackSubaccountCode: subaccountCode,
-      settlementBankCode: params.bankCode,
-      settlementBankName: params.bankName,
-      settlementAccountNumber: params.accountNumber,
-      settlementAccountName: accountName,
-      platformCommissionPct: params.commissionPct ?? 0,
-      settlementConnectedAt: new Date(),
-    },
-  });
-
-  // Retrofit: if a DVA already exists, it was created WITHOUT this subaccount,
-  // so inbound money is still pooling in the platform balance instead of
-  // settling to the SME's bank. Attach the split now so it starts settling.
-  // New DVAs (set up after this point) are born attached via setupVirtualAccount.
-  //
-  // Wrapped so a split-attach failure never loses the already-saved subaccount —
-  // the SME can retry attach via re-connecting, or a new DVA setup will attach
-  // it natively. `splitAttached` lets the caller surface a soft warning.
-  let splitAttached = false;
-  if (business.virtualAccountNumber && business.paystackCustomerCode) {
-    try {
-      await provider.splitDedicatedAccount(business.paystackCustomerCode, subaccountCode);
-      splitAttached = true;
-      logger.info('Subaccount split attached to existing DVA', {
-        businessId,
-        subaccountCode,
-      });
-    } catch (err) {
-      logger.error('Failed to attach subaccount split to existing DVA', {
-        businessId,
-        subaccountCode,
-        err: err instanceof Error ? err.message : err,
-      });
-    }
-  }
-
-  logAudit({
-    userId,
-    businessId,
-    action: 'settlement.connected',
-    resourceType: 'business',
-    resourceId: businessId,
-    newData: { subaccountCode, bankCode: params.bankCode, accountLast4: params.accountNumber.slice(-4), splitAttached },
-  });
-
-  return { subaccountCode, accountName, bankName: params.bankName, splitAttached };
-}
-
 // ─── DVA Transactions Listing ────────────────────────────────────────────────
+// Settlement bank connection removed — consolidated into settlement.service.ts
+// DVA routes now call settlementService.connectSettlementBank directly
 
 export async function getDVATransactions(
   userId: string,

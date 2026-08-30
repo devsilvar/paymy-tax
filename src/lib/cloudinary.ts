@@ -20,12 +20,30 @@ cloudinary.config({
 
 export const ALLOWED_LOGO_MIMES = new Set([
   'image/jpeg',
+  'image/jpg',
+  'image/pjpeg',
+  'image/jfif',
   'image/png',
+  'image/x-png',
   'image/webp',
   'image/svg+xml',
+  'image/svg',
 ]);
 
-export const MAX_LOGO_BYTES = 2 * 1024 * 1024; // 2 MB
+export const MAX_LOGO_BYTES = 5 * 1024 * 1024; // 5 MB
+
+export function isAllowedLogoFile(mimetype?: string, originalname?: string): boolean {
+  if (mimetype && ALLOWED_LOGO_MIMES.has(mimetype.toLowerCase())) {
+    return true;
+  }
+  if (originalname) {
+    const ext = originalname.split('.').pop()?.toLowerCase();
+    if (ext && ['jpg', 'jpeg', 'png', 'webp', 'svg'].includes(ext)) {
+      return true;
+    }
+  }
+  return false;
+}
 
 /**
  * Upload a logo buffer to Cloudinary via streaming.
@@ -37,43 +55,50 @@ export async function uploadLogoToCloudinary(
   mimetype: string,
   oldPublicId?: string | null,
 ): Promise<{ url: string; publicId: string }> {
-  if (!config.cloudinary.cloudName || !config.cloudinary.apiKey) {
-    throw new AppError(
-      500,
-      'Cloudinary is not configured on the server. Please set CLOUDINARY_CLOUD_NAME, CLOUDINARY_API_KEY, and CLOUDINARY_API_SECRET.',
-      'STORAGE_CONFIG_ERROR',
-    );
-  }
-
-  // Delete previous asset first (best-effort, never blocks upload)
-  if (oldPublicId) {
-    try {
-      await cloudinary.uploader.destroy(oldPublicId);
-      logger.info('Old logo deleted from Cloudinary', { oldPublicId });
-    } catch (err) {
-      logger.warn('Failed to delete old logo', { oldPublicId, error: err });
+  // If Cloudinary is configured, attempt upload
+  if (config.cloudinary.cloudName && config.cloudinary.apiKey && config.cloudinary.apiSecret) {
+    // Delete previous asset first (best-effort, never blocks upload)
+    if (oldPublicId && oldPublicId !== 'local_data_uri') {
+      try {
+        await cloudinary.uploader.destroy(oldPublicId);
+        logger.info('Old logo deleted from Cloudinary', { oldPublicId });
+      } catch (err) {
+        logger.warn('Failed to delete old logo', { oldPublicId, error: err });
+      }
     }
+
+    try {
+      const result = await new Promise<{ url: string; publicId: string }>((resolve, reject) => {
+        const uploadStream = cloudinary.uploader.upload_stream(
+          {
+            folder: `paymytax/logos/${businessId}`,
+            resource_type: 'image',
+            transformation: [{ width: 800, height: 800, crop: 'limit' }],
+          },
+          (error, res) => {
+            if (error || !res) {
+              return reject(error || new Error('Cloudinary returned empty result'));
+            }
+            resolve({ url: res.secure_url, publicId: res.public_id });
+          },
+        );
+        Readable.from(buffer).pipe(uploadStream);
+      });
+      return result;
+    } catch (err) {
+      logger.warn('Cloudinary upload failed, falling back to data URI storage', { error: err, businessId });
+    }
+  } else {
+    logger.info('Cloudinary not configured — using data URI storage for business logo', { businessId });
   }
 
-  return new Promise((resolve, reject) => {
-    const uploadStream = cloudinary.uploader.upload_stream(
-      {
-        folder: `paymytax/logos/${businessId}`,
-        resource_type: 'image',
-        transformation: [{ width: 800, height: 800, crop: 'limit' }],
-      },
-      (error, result) => {
-        if (error || !result) {
-          logger.error('Cloudinary upload failed', { error, businessId });
-          return reject(
-            new AppError(500, 'Failed to upload logo to Cloudinary.', 'UPLOAD_FAILED'),
-          );
-        }
-        resolve({ url: result.secure_url, publicId: result.public_id });
-      },
-    );
-    Readable.from(buffer).pipe(uploadStream);
-  });
+  // Graceful fallback: Store as Base64 Data URI
+  const base64 = buffer.toString('base64');
+  const dataUrl = `data:${mimetype};base64,${base64}`;
+  return {
+    url: dataUrl,
+    publicId: 'local_data_uri',
+  };
 }
 
 /**
@@ -82,7 +107,8 @@ export async function uploadLogoToCloudinary(
 export async function deleteLogoFromCloudinary(
   publicId: string,
 ): Promise<void> {
-  if (!publicId) return;
+  if (!publicId || publicId === 'local_data_uri') return;
+  if (!config.cloudinary.cloudName || !config.cloudinary.apiKey) return;
   try {
     await cloudinary.uploader.destroy(publicId);
     logger.info('Logo deleted from Cloudinary', { publicId });
@@ -101,7 +127,8 @@ export function getTransformedLogoUrl(
   baseUrl: string,
   preset: 'thumb' | 'dashboard' | 'pdf',
 ): string {
-  if (!baseUrl?.includes('/image/upload/')) return baseUrl;
+  if (!baseUrl || baseUrl.startsWith('data:')) return baseUrl;
+  if (!baseUrl.includes('/image/upload/')) return baseUrl;
   const transforms: Record<string, string> = {
     thumb: 'w_96,h_96,c_fill,g_auto,r_max,f_auto,q_auto',
     dashboard: 'w_200,h_200,c_fill,g_auto,r_max,f_auto,q_auto',
