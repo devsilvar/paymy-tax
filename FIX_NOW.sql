@@ -5,7 +5,11 @@
 -- This tells Prisma "this migration already ran successfully"
 -- ==============================================================================
 
--- Insert a successful migration record
+-- First, delete any existing failed records for this migration
+DELETE FROM "_prisma_migrations"
+WHERE migration_name = '20260830120000_add_sales_split_ledger';
+
+-- Now insert a successful migration record
 INSERT INTO "_prisma_migrations" (
   id, 
   checksum, 
@@ -25,12 +29,7 @@ VALUES (
   NULL,
   NOW() - INTERVAL '1 second',
   1
-)
-ON CONFLICT (migration_name) DO UPDATE
-SET 
-  finished_at = NOW(),
-  logs = 'Manually marked as applied - columns verified to exist in schema',
-  rolled_back_at = NULL;
+);
 
 -- Verify it was inserted
 SELECT migration_name, finished_at, logs
