@@ -1,9 +1,19 @@
--- AlterTable
-ALTER TABLE "businesses" ADD COLUMN "auto_split_enabled" BOOLEAN NOT NULL DEFAULT false,
-ADD COLUMN "tax_split_percentage" DECIMAL(5,2) NOT NULL DEFAULT 7.50;
+-- AlterTable (idempotent)
+DO $$ 
+BEGIN
+  IF NOT EXISTS (SELECT 1 FROM information_schema.columns 
+                 WHERE table_name = 'businesses' AND column_name = 'auto_split_enabled') THEN
+    ALTER TABLE "businesses" ADD COLUMN "auto_split_enabled" BOOLEAN NOT NULL DEFAULT false;
+  END IF;
+  
+  IF NOT EXISTS (SELECT 1 FROM information_schema.columns 
+                 WHERE table_name = 'businesses' AND column_name = 'tax_split_percentage') THEN
+    ALTER TABLE "businesses" ADD COLUMN "tax_split_percentage" DECIMAL(5,2) NOT NULL DEFAULT 7.50;
+  END IF;
+END $$;
 
--- CreateTable
-CREATE TABLE "settlement_payouts" (
+-- CreateTable (idempotent)
+CREATE TABLE IF NOT EXISTS "settlement_payouts" (
     "id" TEXT NOT NULL,
     "business_id" TEXT NOT NULL,
     "amount" DECIMAL(15,2) NOT NULL,
@@ -27,16 +37,25 @@ CREATE TABLE "settlement_payouts" (
 );
 
 -- CreateIndex
-CREATE UNIQUE INDEX "settlement_payouts_transfer_reference_key" ON "settlement_payouts"("transfer_reference");
+CREATE UNIQUE INDEX IF NOT EXISTS "settlement_payouts_transfer_reference_key" ON "settlement_payouts"("transfer_reference");
 
 -- CreateIndex
-CREATE INDEX "settlement_payouts_business_id_idx" ON "settlement_payouts"("business_id");
+CREATE INDEX IF NOT EXISTS "settlement_payouts_business_id_idx" ON "settlement_payouts"("business_id");
 
 -- CreateIndex
-CREATE INDEX "settlement_payouts_transfer_reference_idx" ON "settlement_payouts"("transfer_reference");
+CREATE INDEX IF NOT EXISTS "settlement_payouts_transfer_reference_idx" ON "settlement_payouts"("transfer_reference");
 
 -- CreateIndex
-CREATE INDEX "settlement_payouts_payment_status_idx" ON "settlement_payouts"("payment_status");
+CREATE INDEX IF NOT EXISTS "settlement_payouts_payment_status_idx" ON "settlement_payouts"("payment_status");
 
--- AddForeignKey
-ALTER TABLE "settlement_payouts" ADD CONSTRAINT "settlement_payouts_business_id_fkey" FOREIGN KEY ("business_id") REFERENCES "businesses"("id") ON DELETE CASCADE ON UPDATE CASCADE;
+-- AddForeignKey (idempotent - PostgreSQL ignores duplicate FK constraints)
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM information_schema.table_constraints 
+    WHERE constraint_name = 'settlement_payouts_business_id_fkey'
+  ) THEN
+    ALTER TABLE "settlement_payouts" ADD CONSTRAINT "settlement_payouts_business_id_fkey" 
+    FOREIGN KEY ("business_id") REFERENCES "businesses"("id") ON DELETE CASCADE ON UPDATE CASCADE;
+  END IF;
+END $$;
