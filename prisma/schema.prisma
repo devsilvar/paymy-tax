@@ -5,7 +5,8 @@ generator client {
 datasource db {
   provider  = "postgresql"
   url       = env("DATABASE_URL")
-  directUrl = env("DIRECT_URL")
+  // Optional direct URL for migrations. Defaults to DATABASE_URL if unset.
+  // Only needed for Neon pooled connections; not required for Supabase/Render Postgres.
 }
 
 /// User accounts - business owners and administrators
