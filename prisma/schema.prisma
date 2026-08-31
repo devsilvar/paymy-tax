@@ -3,8 +3,9 @@ generator client {
 }
 
 datasource db {
-  provider = "postgresql"
-  url      = env("DATABASE_URL")
+  provider  = "postgresql"
+  url       = env("DATABASE_URL")
+  directUrl = env("DIRECT_URL")
 }
 
 /// User accounts - business owners and administrators
@@ -32,6 +33,7 @@ model User {
   transactionPin      String?    @map("transaction_pin")
   pinAttempts         Int        @default(0) @map("pin_attempts")
   pinLockedUntil      DateTime?  @map("pin_locked_until")
+  pinAttemptsResetAt  DateTime?  @map("pin_attempts_reset_at")
   pinSetAt            DateTime?  @map("pin_set_at")
   auditLogs           AuditLog[]
   businesses          Business[]
@@ -138,6 +140,9 @@ model SalesTransaction {
   updatedAt           DateTime                   @updatedAt @map("updated_at")
   createdBy           String?                    @map("created_by")
   metadata            Json?
+  settledViaSplit     Boolean                    @default(false) @map("settled_via_split")
+  splitPct            Decimal?                   @map("split_pct") @db.Decimal(5, 2)
+  platformRetained    Decimal?                   @map("platform_retained") @db.Decimal(15, 2)
   needsVerification   Boolean                    @default(false) @map("needs_verification")
   verifiedAt          DateTime?                  @map("verified_at")
   verifiedBy          String?                    @map("verified_by")
@@ -441,6 +446,7 @@ enum SalesSource {
 
 enum TransactionStatus {
   confirmed
+  completed
   pending
   reversed
   disputed

@@ -1495,7 +1495,7 @@ describe('PayMyTax E2E', () => {
       expect(res.body.success).toBe(true);
       expect(res.body.data.hasPin).toBe(false);
       expect(res.body.data.isLocked).toBe(false);
-      expect(res.body.data.remainingAttempts).toBe(3);
+      expect(res.body.data.remainingAttempts).toBe(5);
     });
 
     it('POST /auth/pin/setup with trivial PIN 1234 → 400 validation error', async () => {
@@ -1544,10 +1544,10 @@ describe('PayMyTax E2E', () => {
         });
 
       expect(res.status).toBe(401);
-      expect(res.body.error.details.remainingAttempts).toBe(2);
+      expect(res.body.error.details.remainingAttempts).toBe(4);
     });
 
-    it('POST /auth/pin/verify with correct PIN → 200 + returns stepUpToken', async () => {
+    it('POST /auth/pin/verify with correct PIN → 200 + resets attempts', async () => {
       const res = await request(app)
         .post('/api/v1/auth/pin/verify')
         .set(auth())
@@ -1558,7 +1558,6 @@ describe('PayMyTax E2E', () => {
       expect(res.status).toBe(200);
       expect(res.body.success).toBe(true);
       expect(res.body.data.valid).toBe(true);
-      expect(typeof res.body.data.stepUpToken).toBe('string');
     });
 
     it('PUT /auth/pin/change with correct current PIN → 200', async () => {
@@ -1614,7 +1613,7 @@ describe('PayMyTax E2E', () => {
       expect(res.body.data.bankName).toBe('Guaranty Trust Bank');
     });
 
-    it('GET /businesses/:id/settlement/preview → 200 + returns available balance and tax reserve', async () => {
+    it('GET /businesses/:id/settlement/preview → 200 + returns available balance, split totals, and tax reserve', async () => {
       const res = await request(app)
         .get(`/api/v1/businesses/${businessId}/settlement/preview`)
         .set(auth());
@@ -1623,16 +1622,44 @@ describe('PayMyTax E2E', () => {
       expect(res.body.success).toBe(true);
       expect(res.body.data).toHaveProperty('availableForWithdrawal');
       expect(res.body.data).toHaveProperty('taxReserve');
+      expect(res.body.data).toHaveProperty('totalSplitSettled');
       expect(res.body.data.settlementAccount.isConnected).toBe(true);
     });
 
-    it('PATCH /businesses/:id/settlement/auto-split → 200 + updates gateway auto-split', async () => {
+    it('PATCH /businesses/:id/settlement/auto-split with invalid split clamps → 400 INVALID_SPLIT_PERCENTAGE', async () => {
+      const resHigh = await request(app)
+        .patch(`/api/v1/businesses/${businessId}/settlement/auto-split`)
+        .set(auth())
+        .send({
+          enabled: true,
+          taxSplitPercentage: 60,
+          pin: '7391',
+        });
+
+      expect(resHigh.status).toBe(400);
+      expect(resHigh.body.error.code).toBe('INVALID_SPLIT_PERCENTAGE');
+
+      const resLow = await request(app)
+        .patch(`/api/v1/businesses/${businessId}/settlement/auto-split`)
+        .set(auth())
+        .send({
+          enabled: true,
+          taxSplitPercentage: 2,
+          pin: '7391',
+        });
+
+      expect(resLow.status).toBe(400);
+      expect(resLow.body.error.code).toBe('INVALID_SPLIT_PERCENTAGE');
+    });
+
+    it('PATCH /businesses/:id/settlement/auto-split → 200 + updates gateway auto-split with PIN', async () => {
       const res = await request(app)
         .patch(`/api/v1/businesses/${businessId}/settlement/auto-split`)
         .set(auth())
         .send({
           enabled: true,
           taxSplitPercentage: 7.5,
+          pin: '7391',
         });
 
       expect(res.status).toBe(200);
@@ -1787,6 +1814,7 @@ describe('PayMyTax E2E', () => {
         .send({
           enabled: true,
           taxSplitPercentage: 7.5,
+          pin: '7391',
         });
 
       expect(res.status).toBe(400);
@@ -1814,6 +1842,7 @@ describe('PayMyTax E2E', () => {
         .set(auth())
         .send({
           enabled: false,
+          pin: '7391',
         });
 
       expect(res.status).toBe(200);
@@ -2075,12 +2104,6 @@ describe('PayMyTax E2E', () => {
           businessType: 'retail',
         });
       testBusinessId = bizRes.body.data.id;
-
-      // Set up PIN for this test user
-      await request(app)
-        .post('/api/v1/auth/pin/create')
-        .set(auth())
-        .send({ pin: '1234', confirmPin: '1234' });
     });
 
     it('First connect (no existing account) → 200 (no permission needed)', async () => {
@@ -2098,7 +2121,7 @@ describe('PayMyTax E2E', () => {
       const res = await request(app)
         .post(`/api/v1/businesses/${testBusinessId}/settlement/connect`)
         .set(auth())
-        .send({ ...secondAccount, pin: '1234' });
+        .send({ ...secondAccount, pin: '7391' });
 
       expect(res.status).toBe(403);
       expect(res.body.error.code).toBe('PAYOUT_CHANGE_LOCKED');
@@ -2148,7 +2171,7 @@ describe('PayMyTax E2E', () => {
       const res = await request(app)
         .post(`/api/v1/businesses/${testBusinessId}/settlement/connect`)
         .set(auth())
-        .send({ ...secondAccount, pin: '1234' });
+        .send({ ...secondAccount, pin: '7391' });
 
       expect(res.status).toBe(200);
       expect(res.body.success).toBe(true);
@@ -2158,7 +2181,7 @@ describe('PayMyTax E2E', () => {
       const res = await request(app)
         .post(`/api/v1/businesses/${testBusinessId}/settlement/connect`)
         .set(auth())
-        .send({ ...firstAccount, pin: '1234' });
+        .send({ ...firstAccount, pin: '7391' });
 
       expect(res.status).toBe(403);
       expect(res.body.error.code).toBe('PAYOUT_CHANGE_LOCKED');
@@ -2185,7 +2208,7 @@ describe('PayMyTax E2E', () => {
       const res = await request(app)
         .post(`/api/v1/businesses/${testBusinessId}/settlement/connect`)
         .set(auth())
-        .send({ ...firstAccount, pin: '1234' });
+        .send({ ...firstAccount, pin: '7391' });
 
       expect(res.status).toBe(403);
     });

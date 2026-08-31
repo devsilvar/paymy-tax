@@ -69,6 +69,8 @@ export async function createSale(
       businessId,
       amount: input.amount,
       source: input.source,
+      // Canonical settled status — matches the tax engine, verification, and
+      // the DB reality (all settled rows are 'confirmed').
       status: input.status ?? 'confirmed',
       referenceId: input.referenceId,
       description: input.description,
@@ -281,7 +283,9 @@ export async function getMonthlySummary(
       where: {
         businessId,
         transactionDate: { gte: monthStart, lte: monthEnd },
-        status: 'confirmed', // only confirmed sales count toward tax
+        // Settled statuses only — include both the canonical 'confirmed' and
+        // the legacy 'completed' so the summary matches the tax engine.
+        status: { in: ['confirmed', 'completed'] },
       },
       _sum: { amount: true },
     }),
@@ -292,7 +296,7 @@ export async function getMonthlySummary(
       where: {
         businessId,
         transactionDate: { gte: monthStart, lte: monthEnd },
-        status: 'confirmed',
+        status: { in: ['confirmed', 'completed'] },
       },
       _sum: { amount: true },
       _count: true,
@@ -610,7 +614,10 @@ export async function getSalesAndExpensesOverview(
       to = curMonthEnd;
       const [earliestSale, earliestExpense] = await Promise.all([
         prisma.salesTransaction.findFirst({
-          where: { businessId, status: 'confirmed', isTaxable: true },
+          // 'confirmed' is the canonical settled status (import/DVA/invoice-paid
+          // rows); 'completed' is the legacy manual-entry status. Count both,
+          // exclude pending/reversed/disputed.
+          where: { businessId, status: { in: ['confirmed', 'completed'] }, isTaxable: true },
           orderBy: { transactionDate: 'asc' },
           select: { transactionDate: true },
         }),
@@ -669,7 +676,11 @@ export async function getSalesAndExpensesOverview(
     prisma.salesTransaction.findMany({
       where: {
         businessId,
-        status: 'confirmed',
+        // 'confirmed' is the canonical settled status (import/DVA/invoice-paid
+        // rows); 'completed' is the legacy manual-entry status. Counting only
+        // 'completed' here made the dashboard chart exclude most real sales
+        // (the Sales page list has no status filter, hence the mismatch).
+        status: { in: ['confirmed', 'completed'] },
         isTaxable: true,
         transactionDate: { gte: from, lte: to },
       },
@@ -695,7 +706,7 @@ export async function getSalesAndExpensesOverview(
       ? prisma.salesTransaction.aggregate({
           where: {
             businessId,
-            status: 'confirmed',
+            status: { in: ['confirmed', 'completed'] },
             isTaxable: true,
             transactionDate: { gte: prevFrom, lte: prevTo },
           },

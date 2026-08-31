@@ -65,7 +65,9 @@ export async function getUnifiedLedger(
           where: {
             businessId,
             source: 'bank_transfer',
-            status: 'confirmed',
+            // Settled statuses only — 'confirmed' is canonical, 'completed'
+            // is the legacy manual-entry status.
+            status: { in: ['confirmed', 'completed'] },
             transactionDate: { lt: fromDate },
           },
           _sum: { amount: true },
@@ -88,7 +90,7 @@ export async function getUnifiedLedger(
       const preSales = await prisma.salesTransaction.aggregate({
         where: {
           businessId,
-          status: 'confirmed',
+          status: { in: ['confirmed', 'completed'] },
           transactionDate: { lt: fromDate },
         },
         _sum: { amount: true },
@@ -167,7 +169,12 @@ export async function getUnifiedLedger(
         description: s.description || (s.source === 'bank_transfer' ? 'DVA Transfer Inflow' : 'Sales Revenue'),
         reference: s.referenceId || s.id,
         date: dateObj.toISOString(),
-        status: s.status === 'confirmed' ? 'settled' : s.status === 'reversed' ? 'reversed' : 'pending',
+        status:
+          s.status === 'confirmed' || s.status === 'completed'
+            ? 'settled'
+            : s.status === 'reversed'
+              ? 'reversed'
+              : 'pending',
         counterparty: s.customerName || s.customerHint || 'Customer',
         isTaxable: s.isTaxable,
         metadata: s.metadata as Record<string, unknown> | null,

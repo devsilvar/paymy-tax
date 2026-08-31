@@ -69,11 +69,6 @@ export const resolveSettlementSchema = z.object({
 
 export const connectSettlementSchema = resolveSettlementSchema.extend({
   bankName: z.string().trim().min(1, 'Bank name is required'),
-  commissionPct: z
-    .number()
-    .min(0, 'Commission cannot be negative')
-    .max(100, 'Commission cannot exceed 100%')
-    .optional(),
   pin: z
     .string()
     .regex(/^\d{4}$/, 'Transaction PIN must be exactly 4 digits')

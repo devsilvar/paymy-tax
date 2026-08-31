@@ -283,12 +283,14 @@ export async function getMonthlySummary(
       where: { businessId, expenseDate: dateFilter },
     }),
 
-    // Confirmed sales for the same month — needed for expense intelligence
+    // Completed sales for the same month — needed for expense intelligence.
+    // Same settled-status rule as the sales overview: 'confirmed' is canonical,
+    // 'completed' is the legacy manual-entry status.
     prisma.salesTransaction.aggregate({
       where: {
         businessId,
         transactionDate: dateFilter,
-        status: 'confirmed',
+        status: { in: ['confirmed', 'completed'] },
       },
       _sum: { amount: true },
     }),

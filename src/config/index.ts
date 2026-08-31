@@ -194,6 +194,19 @@ export const config = {
     maxRequests: parseInt(process.env.RATE_LIMIT_MAX_REQUESTS || '10000', 10),
   },
 
+  // PIN Security
+  pin: {
+    maxAttempts: Number(process.env.PIN_MAX_ATTEMPTS ?? 5),
+    attemptWindowHours: Number(process.env.PIN_ATTEMPT_WINDOW_HOURS ?? 24),
+  },
+
+  // Settlement & Split Payouts
+  settlement: {
+    minTaxSplitPct: Number(process.env.SETTLEMENT_MIN_TAX_SPLIT_PCT ?? 7.5),
+    maxTaxSplitPct: Number(process.env.SETTLEMENT_MAX_TAX_SPLIT_PCT ?? 50),
+    platformCommissionPct: Number(process.env.PLATFORM_COMMISSION_PCT ?? 0),
+  },
+
   // Scheduled Jobs (node-cron)
   // Auto-enabled in production; opt-in for dev so `tsx watch` doesn't
   // re-register the schedule on every file save.

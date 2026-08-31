@@ -650,7 +650,7 @@ export async function markInvoicePaid(
         businessId,
         amount: total,
         source: mappedSource,
-        status: 'confirmed',
+        status: 'confirmed', // canonical settled status
         referenceId: existing.invoiceNumber,
         description: `Invoice ${existing.invoiceNumber} — ${existing.customerName}`,
         customerName: existing.customerName,

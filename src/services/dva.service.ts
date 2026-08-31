@@ -1,4 +1,5 @@
 import prisma from '@/lib/prisma';
+import { Prisma } from '@prisma/client';
 import logger from '@/lib/logger';
 import { config } from '@/config';
 import { AppError } from '@/middleware/errorHandler';
@@ -345,7 +346,7 @@ export async function getVirtualAccount(userId: string, businessId: string) {
 // endpoint summarizes OUR OWN records, which is the only "balance" that
 // actually exists for a DVA under split-settlement.
 //
-// Two totals on purpose: `confirmed` only counts sales a human has verified
+// Two totals on purpose: `completed` only counts sales a human has verified
 // (see POST /sales/:id/verify) and is what feeds tax calculations. Every
 // DVA transfer lands in `pendingVerification` first — see the explicit
 // `status: 'pending', needsVerification: true` inside the
@@ -366,7 +367,7 @@ export async function getDVABalance(userId: string, businessId: string) {
     metadata: { path: ['channel'], equals: 'dva' },
   };
 
-  const [confirmed, pending, lastTransaction] = await Promise.all([
+  const [completed, pending, lastTransaction] = await Promise.all([
     prisma.salesTransaction.aggregate({
       where: { ...dvaFilter, status: 'confirmed' },
       _sum: { amount: true },
@@ -387,9 +388,9 @@ export async function getDVABalance(userId: string, businessId: string) {
   return {
     accountNumber: business.virtualAccountNumber,
     accountStatus: business.virtualAccountNumber ? 'active' : 'none',
-    confirmed: {
-      total: confirmed._sum.amount ?? 0,
-      count: confirmed._count,
+    completed: {
+      total: completed._sum.amount ?? 0,
+      count: completed._count,
     },
     pendingVerification: {
       total: pending._sum.amount ?? 0,
@@ -696,6 +697,13 @@ export async function processDVATransferWebhook(event: any) {
       ? `${data.customer.first_name} ${data.customer.last_name || ''}`.trim()
       : null);
 
+  const isSplitSettled = Boolean(business.autoSplitEnabled && business.paystackSubaccountCode);
+  const splitPct = isSplitSettled ? business.taxSplitPercentage : null;
+  const platformRetained =
+    isSplitSettled && business.taxSplitPercentage != null
+      ? new Prisma.Decimal(amount).mul(business.taxSplitPercentage).div(100)
+      : null;
+
   const sale = await prisma.salesTransaction.create({
     data: {
       businessId: business.id,
@@ -707,10 +715,14 @@ export async function processDVATransferWebhook(event: any) {
         ? `${data.customer.first_name} ${data.customer.last_name || ''}`.trim()
         : 'Bank Transfer',
       transactionDate: data.paid_at ? new Date(data.paid_at) : new Date(),
+      settledViaSplit: isSplitSettled,
+      splitPct,
+      platformRetained,
       metadata: {
         channel: 'dva',
         paystackTransactionId: data.id,
         autoRecorded: true,
+        splitSettled: isSplitSettled,
       },
       needsVerification: true,
       customerHint,

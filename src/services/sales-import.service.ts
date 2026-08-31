@@ -349,7 +349,7 @@ export async function commitImport(
         businessId,
         amount: r.amount,
         source: r.source,
-        status: 'confirmed' as const,
+        status: 'confirmed' as const, // canonical settled status
         referenceId: r.referenceId,
         description: r.description,
         customerName: r.customerName,

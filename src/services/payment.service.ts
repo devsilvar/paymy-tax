@@ -592,6 +592,20 @@ export async function processWebhook(signature: string, rawBody: string) {
           payoutId: payout.id,
           reference: ref,
         });
+
+        void createReminderOnce({
+          businessId: payout.businessId,
+          reminderType: 'payout_completed',
+          scheduledDate: new Date(),
+          message: `Your withdrawal of ${formatNaira(Number(payout.amount))} (ref ${ref || payout.transferReference}) was successfully transferred to your ${payout.destinationBankName} account.`,
+          referenceType: 'settlement_payout',
+          referenceId: payout.id,
+        }).catch((err) =>
+          logger.warn('Failed to create payout_completed reminder', {
+            payoutId: payout.id,
+            err: err instanceof Error ? err.message : err,
+          })
+        );
       }
     }
 
@@ -632,6 +646,20 @@ export async function processWebhook(signature: string, rawBody: string) {
           reference: ref,
           reason,
         });
+
+        void createReminderOnce({
+          businessId: payout.businessId,
+          reminderType: 'payout_failed',
+          scheduledDate: new Date(),
+          message: `Your withdrawal transfer of ${formatNaira(Number(payout.amount))} (ref ${ref || payout.transferReference}) failed: ${reason || 'Bank transfer could not be completed'}. The funds remain available in your balance.`,
+          referenceType: 'settlement_payout',
+          referenceId: payout.id,
+        }).catch((err) =>
+          logger.warn('Failed to create payout_failed reminder', {
+            payoutId: payout.id,
+            err: err instanceof Error ? err.message : err,
+          })
+        );
       }
     }
 

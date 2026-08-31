@@ -1,5 +1,4 @@
 import bcrypt from 'bcrypt';
-import jwt from 'jsonwebtoken';
 import prisma from '@/lib/prisma';
 import config from '@/config';
 import logger from '@/lib/logger';
@@ -7,8 +6,6 @@ import { AppError } from '@/middleware/errorHandler';
 import { logAudit } from '@/lib/audit';
 import { SetupPinInput, ChangePinInput } from '@/validators/pin.validator';
 
-const MAX_PIN_ATTEMPTS = 3;
-const PIN_LOCKOUT_MINUTES = 15;
 const BCRYPT_ROUNDS = 12;
 
 export interface PinStatusResponse {
@@ -16,6 +13,7 @@ export interface PinStatusResponse {
   isLocked: boolean;
   lockedUntil?: string;
   remainingAttempts: number;
+  attemptsResetAt?: string;
   pinSetAt?: string;
 }
 
@@ -26,6 +24,7 @@ export async function getPinStatus(userId: string): Promise<PinStatusResponse> {
       transactionPin: true,
       pinAttempts: true,
       pinLockedUntil: true,
+      pinAttemptsResetAt: true,
       pinSetAt: true,
     },
   });
@@ -36,12 +35,15 @@ export async function getPinStatus(userId: string): Promise<PinStatusResponse> {
 
   const now = new Date();
   const isLocked = Boolean(user.pinLockedUntil && user.pinLockedUntil > now);
+  const windowExpired = !user.pinAttemptsResetAt || user.pinAttemptsResetAt <= now;
+  const currentAttempts = windowExpired ? 0 : user.pinAttempts;
 
   return {
     hasPin: Boolean(user.transactionPin),
     isLocked,
     lockedUntil: isLocked && user.pinLockedUntil ? user.pinLockedUntil.toISOString() : undefined,
-    remainingAttempts: isLocked ? 0 : Math.max(0, MAX_PIN_ATTEMPTS - user.pinAttempts),
+    remainingAttempts: isLocked ? 0 : Math.max(0, config.pin.maxAttempts - currentAttempts),
+    attemptsResetAt: !isLocked && user.pinAttemptsResetAt && !windowExpired ? user.pinAttemptsResetAt.toISOString() : undefined,
     pinSetAt: user.pinSetAt ? user.pinSetAt.toISOString() : undefined,
   };
 }
@@ -81,6 +83,7 @@ export async function setupPin(
       pinSetAt: new Date(),
       pinAttempts: 0,
       pinLockedUntil: null,
+      pinAttemptsResetAt: null,
     },
   });
 
@@ -104,7 +107,7 @@ export async function verifyPin(
   pin: string,
   ipAddress?: string,
   userAgent?: string
-): Promise<{ valid: boolean; stepUpToken: string }> {
+): Promise<{ valid: boolean }> {
   const user = await prisma.user.findUnique({
     where: { id: userId },
     select: {
@@ -112,6 +115,7 @@ export async function verifyPin(
       transactionPin: true,
       pinAttempts: true,
       pinLockedUntil: true,
+      pinAttemptsResetAt: true,
     },
   });
 
@@ -125,10 +129,14 @@ export async function verifyPin(
 
   const now = new Date();
   if (user.pinLockedUntil && user.pinLockedUntil > now) {
+    const lockedUntilFormatted = user.pinLockedUntil.toLocaleString('en-NG', {
+      dateStyle: 'medium',
+      timeStyle: 'short',
+    });
     const remainingMinutes = Math.ceil((user.pinLockedUntil.getTime() - now.getTime()) / (60 * 1000));
     throw new AppError(
       423,
-      `Transaction PIN is temporarily locked due to multiple failed attempts. Try again in ${remainingMinutes} minute(s).`,
+      `Transaction PIN is temporarily locked. Locked until ${lockedUntilFormatted}. You can reset it now from Settings → Security using your password.`,
       'PIN_LOCKED',
       { remainingMinutes, lockedUntil: user.pinLockedUntil }
     );
@@ -138,15 +146,20 @@ export async function verifyPin(
   const isValid = await bcrypt.compare(pin, user.transactionPin);
 
   if (!isValid) {
-    const newAttempts = user.pinAttempts + 1;
-    const isNowLocked = newAttempts >= MAX_PIN_ATTEMPTS;
-    const lockedUntil = isNowLocked ? new Date(Date.now() + PIN_LOCKOUT_MINUTES * 60 * 1000) : null;
+    const windowExpired = !user.pinAttemptsResetAt || user.pinAttemptsResetAt <= now;
+    const newAttempts = windowExpired ? 1 : user.pinAttempts + 1;
+    const resetAt = windowExpired
+      ? new Date(now.getTime() + config.pin.attemptWindowHours * 60 * 60 * 1000)
+      : user.pinAttemptsResetAt;
+    const isNowLocked = newAttempts >= config.pin.maxAttempts;
+    const lockedUntil = isNowLocked ? resetAt : null;
 
     await prisma.user.update({
       where: { id: userId },
       data: {
         pinAttempts: newAttempts,
         pinLockedUntil: lockedUntil,
+        pinAttemptsResetAt: resetAt,
       },
     });
 
@@ -157,19 +170,23 @@ export async function verifyPin(
       resourceId: userId,
       ipAddress,
       userAgent,
-      newData: { attempts: newAttempts, isLocked: isNowLocked },
+      newData: { attempts: newAttempts, isLocked: isNowLocked, lockedUntil: lockedUntil?.toISOString() },
     });
 
     if (isNowLocked) {
+      const resetAtFormatted = resetAt.toLocaleString('en-NG', {
+        dateStyle: 'medium',
+        timeStyle: 'short',
+      });
       throw new AppError(
         423,
-        `Too many incorrect PIN attempts. Your transaction PIN is locked for ${PIN_LOCKOUT_MINUTES} minutes.`,
+        `Too many incorrect PIN attempts. Your PIN is locked until ${resetAtFormatted}. You can reset it now from Settings → Security using your password.`,
         'PIN_LOCKED',
-        { remainingMinutes: PIN_LOCKOUT_MINUTES, lockedUntil }
+        { remainingMinutes: Math.ceil((resetAt.getTime() - now.getTime()) / (60 * 1000)), lockedUntil: resetAt }
       );
     }
 
-    const remaining = MAX_PIN_ATTEMPTS - newAttempts;
+    const remaining = config.pin.maxAttempts - newAttempts;
     throw new AppError(
       401,
       `Incorrect transaction PIN. ${remaining} attempt(s) remaining before account lockout.`,
@@ -178,25 +195,19 @@ export async function verifyPin(
     );
   }
 
-  // Reset attempt counter on success if needed
-  if (user.pinAttempts > 0 || user.pinLockedUntil) {
+  // Reset attempt counter and lockout on success
+  if (user.pinAttempts > 0 || user.pinLockedUntil || user.pinAttemptsResetAt) {
     await prisma.user.update({
       where: { id: userId },
-      data: { pinAttempts: 0, pinLockedUntil: null },
+      data: {
+        pinAttempts: 0,
+        pinLockedUntil: null,
+        pinAttemptsResetAt: null,
+      },
     });
   }
 
-  // Issue 5-minute ephemeral step-up token
-  const stepUpToken = jwt.sign(
-    {
-      userId: user.id,
-      type: 'pin_step_up',
-    },
-    config.jwt.accessSecret,
-    { expiresIn: '5m' }
-  );
-
-  return { valid: true, stepUpToken };
+  return { valid: true };
 }
 
 export async function changePin(
@@ -213,6 +224,7 @@ export async function changePin(
       transactionPin: true,
       pinAttempts: true,
       pinLockedUntil: true,
+      pinAttemptsResetAt: true,
     },
   });
 
@@ -226,11 +238,16 @@ export async function changePin(
 
   const now = new Date();
   if (user.pinLockedUntil && user.pinLockedUntil > now) {
+    const lockedUntilFormatted = user.pinLockedUntil.toLocaleString('en-NG', {
+      dateStyle: 'medium',
+      timeStyle: 'short',
+    });
     const remainingMinutes = Math.ceil((user.pinLockedUntil.getTime() - now.getTime()) / (60 * 1000));
     throw new AppError(
       423,
-      `Transaction PIN is temporarily locked. Try again in ${remainingMinutes} minute(s).`,
-      'PIN_LOCKED'
+      `Transaction PIN is temporarily locked. Locked until ${lockedUntilFormatted}. You can reset it now from Settings → Security using your password.`,
+      'PIN_LOCKED',
+      { remainingMinutes, lockedUntil: user.pinLockedUntil }
     );
   }
 
@@ -238,27 +255,52 @@ export async function changePin(
   if (input.currentPin) {
     const isPinValid = await bcrypt.compare(input.currentPin, user.transactionPin);
     if (!isPinValid) {
-      const newAttempts = user.pinAttempts + 1;
-      const isNowLocked = newAttempts >= MAX_PIN_ATTEMPTS;
-      const lockedUntil = isNowLocked ? new Date(Date.now() + PIN_LOCKOUT_MINUTES * 60 * 1000) : null;
+      const windowExpired = !user.pinAttemptsResetAt || user.pinAttemptsResetAt <= now;
+      const newAttempts = windowExpired ? 1 : user.pinAttempts + 1;
+      const resetAt = windowExpired
+        ? new Date(now.getTime() + config.pin.attemptWindowHours * 60 * 60 * 1000)
+        : user.pinAttemptsResetAt;
+      const isNowLocked = newAttempts >= config.pin.maxAttempts;
+      const lockedUntil = isNowLocked ? resetAt : null;
 
       await prisma.user.update({
         where: { id: userId },
-        data: { pinAttempts: newAttempts, pinLockedUntil: lockedUntil },
+        data: {
+          pinAttempts: newAttempts,
+          pinLockedUntil: lockedUntil,
+          pinAttemptsResetAt: resetAt,
+        },
+      });
+
+      logAudit({
+        userId,
+        action: isNowLocked ? 'user.pin_locked' : 'user.pin_failed',
+        resourceType: 'user_security',
+        resourceId: userId,
+        ipAddress,
+        userAgent,
+        newData: { attempts: newAttempts, isLocked: isNowLocked, lockedUntil: lockedUntil?.toISOString() },
       });
 
       if (isNowLocked) {
+        const resetAtFormatted = resetAt.toLocaleString('en-NG', {
+          dateStyle: 'medium',
+          timeStyle: 'short',
+        });
         throw new AppError(
           423,
-          `Too many incorrect PIN attempts. Locked for ${PIN_LOCKOUT_MINUTES} minutes.`,
-          'PIN_LOCKED'
+          `Too many incorrect PIN attempts. Your PIN is locked until ${resetAtFormatted}. You can reset it now from Settings → Security using your password.`,
+          'PIN_LOCKED',
+          { remainingMinutes: Math.ceil((resetAt.getTime() - now.getTime()) / (60 * 1000)), lockedUntil: resetAt }
         );
       }
 
+      const remaining = config.pin.maxAttempts - newAttempts;
       throw new AppError(
         401,
-        `Current transaction PIN is incorrect. ${MAX_PIN_ATTEMPTS - newAttempts} attempt(s) remaining.`,
-        'INVALID_PIN'
+        `Current transaction PIN is incorrect. ${remaining} attempt(s) remaining before account lockout.`,
+        'INVALID_PIN',
+        { remainingAttempts: remaining }
       );
     }
   } else if (input.password) {
@@ -278,6 +320,7 @@ export async function changePin(
       pinSetAt: new Date(),
       pinAttempts: 0,
       pinLockedUntil: null,
+      pinAttemptsResetAt: null,
     },
   });
 

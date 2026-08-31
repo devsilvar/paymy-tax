@@ -12,4 +12,8 @@ router.get('/tax-payments/:paymentId', receiptController.downloadTaxPaymentRecei
 // GET /api/v1/businesses/:businessId/receipts/dva-transfers/:saleId
 router.get('/dva-transfers/:saleId', receiptController.downloadDvaTransferReceipt);
 
+// GET /api/v1/businesses/:businessId/receipts/sales/:saleId
+// Universal receipt for ANY sales transaction (bank, cash, POS, invoice, etc.)
+router.get('/sales/:saleId', receiptController.downloadSalesReceipt);
+
 export default router;

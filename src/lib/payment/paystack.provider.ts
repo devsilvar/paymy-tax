@@ -439,16 +439,30 @@ export class PaystackProvider implements PaymentProvider {
     subaccountCode: string,
     params: UpdateSubaccountParams
   ): Promise<{ subaccountCode: string }> {
-    const data = await this.request('PUT', `/subaccount/${subaccountCode}`, {
-      business_name: params.businessName,
-      bank_code: params.bankCode,
-      account_number: params.accountNumber,
-      percentage_charge: params.percentageCharge,
-    });
+    try {
+      const data = await this.request('PUT', `/subaccount/${subaccountCode}`, {
+        business_name: params.businessName,
+        bank_code: params.bankCode,
+        account_number: params.accountNumber,
+        percentage_charge: params.percentageCharge,
+      });
 
-    return {
-      subaccountCode: data?.subaccount_code ?? subaccountCode,
-    };
+      return {
+        subaccountCode: data?.subaccount_code ?? subaccountCode,
+      };
+    } catch (err) {
+      if (this.shouldUseBankFixture() || subaccountCode.startsWith('SUB_test_')) {
+        logger.warn('Paystack bank fixture used — no real subaccount updated', {
+          op: 'updateSubaccount',
+          env: config.app.env,
+          subaccountCode,
+        });
+        return {
+          subaccountCode,
+        };
+      }
+      throw err;
+    }
   }
 
   /**

@@ -15,7 +15,6 @@ export const connectSettlementSchema = z.object({
     .regex(/^\d{10}$/, 'Account number must be exactly 10 digits'),
   bankCode: z.string().trim().min(1, 'Bank code is required'),
   bankName: z.string().trim().min(1, 'Bank name is required'),
-  commissionPct: z.number().min(0).max(100).optional().default(0),
   pin: z
     .string()
     .regex(/^\d{4}$/, 'Transaction PIN must be exactly 4 digits')
@@ -36,6 +35,7 @@ export const withdrawBalanceSchema = z.object({
 export const toggleAutoSplitSchema = z.object({
   enabled: z.boolean(),
   taxSplitPercentage: z.number().min(0).max(100).optional().default(7.5),
+  pin: z.string().regex(/^\d{4}$/, 'Transaction PIN must be exactly 4 digits'),
 });
 
 export const payoutHistoryQuerySchema = z.object({

@@ -6,8 +6,10 @@ import { logAudit } from '@/lib/audit';
 import {
   buildTaxPaymentReceiptPdf,
   buildDvaTransferReceiptPdf,
+  buildSalesReceiptPdf,
   TaxPaymentReceiptData,
   DvaTransferReceiptData,
+  SalesReceiptData,
 } from './receipt.pdf';
 
 function toNumber(val: any): number {
@@ -155,6 +157,80 @@ export async function getDvaTransferReceipt(
   });
 
   logger.info('DVA transfer receipt generated', { saleId, receiptNumber, businessId });
+
+  return { buffer, filename, receiptNumber };
+}
+
+
+
+/**
+ * Generates a universal PDF receipt for ANY sales transaction (bank transfer, cash, POS, invoice, etc.)
+ */
+export async function getSalesReceipt(
+  userId: string,
+  businessId: string,
+  saleId: string
+): Promise<{ buffer: Buffer; filename: string; receiptNumber: string }> {
+  const business = await verifyBusinessOwnership(userId, businessId);
+
+  const sale = await prisma.salesTransaction.findUnique({
+    where: { id: saleId },
+  });
+
+  if (!sale || sale.businessId !== businessId) {
+    throw new AppError(404, 'Sales transaction not found', 'TRANSACTION_NOT_FOUND');
+  }
+
+  const transactionDate = sale.transactionDate || sale.createdAt;
+  const receiptNumber = generateReceiptNumber('RCT-SALE', transactionDate, sale.id);
+
+  // Map source to human-readable labels
+  const sourceLabels: Record<string, string> = {
+    bank_transfer: 'Bank Transfer (DVA)',
+    paycode: 'Paystack Paycode',
+    pos: 'POS Terminal',
+    online_store: 'Online Store Payment',
+    manual: 'Manual Entry / Cash',
+    cash: 'Cash Payment',
+    invoice: 'Invoice Payment',
+  };
+
+  const receiptData: import('./receipt.pdf').SalesReceiptData = {
+    receiptNumber,
+    transactionReference: sale.referenceId,
+    transactionDate,
+    amount: toNumber(sale.amount),
+    source: sale.source as any,
+    sourceLabel: sourceLabels[sale.source] || sale.source,
+    customerName: sale.customerName,
+    description: sale.description,
+    invoiceNumber: sale.source === 'invoice' ? sale.referenceId : null,
+    business: {
+      businessName: business.businessName,
+      ownerName: business.ownerName,
+      merchantId: business.merchantId,
+      taxId: business.taxId,
+      address: business.address && business.city 
+        ? `${business.address}, ${business.city}${business.state ? ', ' + business.state : ''}` 
+        : business.address || null,
+      logoUrl: business.logoUrl,
+    },
+  };
+
+  const { buildSalesReceiptPdf } = await import('./receipt.pdf');
+  const buffer = await buildSalesReceiptPdf(receiptData);
+  const filename = `${receiptNumber}.pdf`;
+
+  logAudit({
+    userId,
+    businessId,
+    action: 'receipt.downloaded',
+    resourceType: 'sales_receipt',
+    resourceId: sale.id,
+    newData: { receiptNumber, source: sale.source },
+  });
+
+  logger.info('Sales receipt generated', { saleId, receiptNumber, source: sale.source, businessId });
 
   return { buffer, filename, receiptNumber };
 }

@@ -47,10 +47,18 @@ export async function calculateTax(
     );
   }
 
-  // Aggregate confirmed sales and all expenses for the month
+  // Aggregate settled, taxable sales and deductible expenses for the month.
+  // 'confirmed' is the canonical settled status (import/DVA/invoice-verified
+  // rows); 'completed' is the legacy manual-entry status. Counting only one of
+  // them silently dropped the other half of the business's sales from tax.
   const [salesAgg, expenseAgg] = await Promise.all([
     prisma.salesTransaction.aggregate({
-      where: { businessId, transactionDate: dateFilter, status: 'confirmed', isTaxable: true },
+      where: {
+        businessId,
+        transactionDate: dateFilter,
+        status: { in: ['confirmed', 'completed'] },
+        isTaxable: true,
+      },
       _sum: { amount: true },
     }),
     prisma.expense.aggregate({
@@ -309,7 +317,9 @@ export async function getDashboard(
   const [liveSalesAgg, liveExpenseAgg, monthSalesAgg, monthExpenseAgg] =
     await Promise.all([
       prisma.salesTransaction.aggregate({
-        where: { businessId, status: 'confirmed', isTaxable: true },
+        // Same settled-status rule as calculateTax — the dashboard must match
+        // what "Calculate Tax" would produce.
+        where: { businessId, status: { in: ['confirmed', 'completed'] }, isTaxable: true },
         _sum: { amount: true },
       }),
       prisma.expense.aggregate({
@@ -317,7 +327,14 @@ export async function getDashboard(
         _sum: { amount: true },
       }),
       prisma.salesTransaction.aggregate({
-        where: { businessId, transactionDate: currentDateFilter, status: 'confirmed', isTaxable: true },
+        // Same settled-status rule as calculateTax — this feeds the "This
+        // Month" card (sales + live-recomputed taxPayable).
+        where: {
+          businessId,
+          transactionDate: currentDateFilter,
+          status: { in: ['confirmed', 'completed'] },
+          isTaxable: true,
+        },
         _sum: { amount: true },
       }),
       prisma.expense.aggregate({

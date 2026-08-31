@@ -5,6 +5,9 @@ import { AppError } from '@/middleware/errorHandler';
 import { logAudit } from '@/lib/audit';
 import logger from '@/lib/logger';
 import * as pinService from '@/services/pin.service';
+import { createReminderOnce } from '@/services/reminder.service';
+import { formatNaira } from '@/lib/format';
+import config from '@/config';
 import crypto from 'crypto';
 import {
   WithdrawBalanceInput,
@@ -60,22 +63,59 @@ export async function getPayoutPreview(
   const business = await verifyBusinessOwnership(userId, businessId);
   const db = tx ?? prisma;
 
-  // 1. Total confirmed DVA inflows
+  // 1. DVA Inflows breakdown:
   // DVA-originated inflows only — matches getDVABalance (dva.service.ts:363-367).
   // Manually-entered bank transfers never touched the platform balance and
-  // MUST NOT be withdrawable. (noticepay.md NEW-B)
-  const inflowsAggregate = await db.salesTransaction.aggregate({
+  // MUST NOT be withdrawable. (noticepay.md NEW-B & NEW-K)
+  
+  // Platform-held share of split-settled inflows.
+  // Settled-status rule: DVA inflows are created 'pending' and flipped to
+  // 'confirmed' on verification — they are NEVER 'completed'. Counting only
+  // 'completed' zeroed out platform-held funds. 'confirmed' is canonical;
+  // 'completed' kept for legacy rows. Matches getDVABalance + e2e test NEW-B.
+  const splitAgg = await db.salesTransaction.aggregate({
     where: {
       businessId,
       source: 'bank_transfer',
-      status: 'confirmed',
+      status: { in: ['confirmed', 'completed'] },
+      metadata: { path: ['channel'], equals: 'dva' },
+      settledViaSplit: true,
+    },
+    _sum: {
+      platformRetained: true,
+    },
+  });
+  const totalPlatformRetained = toNumber(splitAgg._sum.platformRetained ?? 0);
+
+  // Plain (non-split) inflows count in full — same settled-status rule.
+  const plainAgg = await db.salesTransaction.aggregate({
+    where: {
+      businessId,
+      source: 'bank_transfer',
+      status: { in: ['confirmed', 'completed'] },
+      metadata: { path: ['channel'], equals: 'dva' },
+      settledViaSplit: false,
+    },
+    _sum: {
+      amount: true,
+    },
+  });
+  const totalPlainInflows = toNumber(plainAgg._sum.amount ?? 0);
+
+  // ALL settled DVA inflows — display + tax fallback only (same rule).
+  const allAgg = await db.salesTransaction.aggregate({
+    where: {
+      businessId,
+      source: 'bank_transfer',
+      status: { in: ['confirmed', 'completed'] },
       metadata: { path: ['channel'], equals: 'dva' },
     },
     _sum: {
       amount: true,
     },
   });
-  const totalInflows = toNumber(inflowsAggregate._sum.amount ?? 0);
+  const totalInflowsAll = toNumber(allAgg._sum.amount ?? 0);
+  const platformHeldFunds = totalPlainInflows + totalPlatformRetained;
 
   // 2. Total completed / pending / processing withdrawals
   // processing = transfer initiated (admin-approved), pending = awaiting admin approval
@@ -109,20 +149,21 @@ export async function getPayoutPreview(
     estimatedTaxLiability += toNumber(report.taxPayable);
   }
 
-  // If no finalized reports yet, compute 7.5% tax escrow reserve on total sales minus expenses
-  if (unpaidReports.length === 0 && totalInflows > 0) {
+  // If no finalized reports yet, compute 7.5% tax escrow reserve on total sales minus expenses.
+  // Tax fallback MUST use totalInflowsAll because tax is owed on total revenue regardless of split. (NEW-K)
+  if (unpaidReports.length === 0 && totalInflowsAll > 0) {
     const totalExpensesAgg = await db.expense.aggregate({
       where: { businessId, isDeductible: true },
       _sum: { amount: true },
     });
     const totalExpenses = toNumber(totalExpensesAgg._sum.amount ?? 0);
-    const grossProfit = Math.max(0, totalInflows - totalExpenses);
+    const grossProfit = Math.max(0, totalInflowsAll - totalExpenses);
     estimatedTaxLiability = Math.round(grossProfit * 0.075 * 100) / 100;
   }
 
   // 4. Safe available balance (cannot withdraw funds reserved for unpaid FIRS taxes)
   const taxReserve = Math.max(0, estimatedTaxLiability);
-  const availableForWithdrawal = Math.max(0, Math.round((totalInflows - totalWithdrawn - taxReserve) * 100) / 100);
+  const availableForWithdrawal = Math.max(0, Math.round((platformHeldFunds - totalWithdrawn - taxReserve) * 100) / 100);
 
   const isPinLocked = Boolean(
     business.user.pinLockedUntil && business.user.pinLockedUntil > new Date()
@@ -135,7 +176,8 @@ export async function getPayoutPreview(
   return {
     businessId: business.id,
     businessName: business.businessName,
-    totalInflows,
+    totalInflows: totalInflowsAll,
+    totalSplitSettled: Math.max(0, Math.round((totalInflowsAll - platformHeldFunds) * 100) / 100),
     totalWithdrawn,
     taxReserve,
     availableForWithdrawal,
@@ -155,7 +197,7 @@ export async function getPayoutPreview(
     security: {
       hasPin: Boolean(business.user.transactionPin),
       isPinLocked,
-      remainingAttempts: isPinLocked ? 0 : Math.max(0, 3 - (business.user.pinAttempts || 0)),
+      remainingAttempts: isPinLocked ? 0 : Math.max(0, config.pin.maxAttempts - (business.user.pinAttempts || 0)),
     },
     payoutChange: payoutChangeLock,
   };
@@ -224,7 +266,7 @@ export async function connectSettlementBank(
     await provider.updateSubaccount(business.paystackSubaccountCode, {
       bankCode: params.bankCode,
       accountNumber: params.accountNumber,
-      percentageCharge: params.commissionPct ?? 0,
+      percentageCharge: config.settlement.platformCommissionPct,
     });
     subaccountCode = business.paystackSubaccountCode;
     
@@ -236,7 +278,7 @@ export async function connectSettlementBank(
       businessName: business.businessName,
       bankCode: params.bankCode,
       accountNumber: params.accountNumber,
-      percentageCharge: params.commissionPct ?? 0,
+      percentageCharge: config.settlement.platformCommissionPct,
     });
     subaccountCode = result.subaccountCode;
 
@@ -262,7 +304,7 @@ export async function connectSettlementBank(
     settlementBankName: params.bankName,
     settlementAccountNumber: params.accountNumber,
     settlementAccountName: accountName,
-    platformCommissionPct: params.commissionPct ?? 0,
+    platformCommissionPct: config.settlement.platformCommissionPct,
     settlementConnectedAt: new Date(),
   };
 
@@ -411,7 +453,7 @@ export async function withdrawBalance(
         narration: params.narration,
       },
     });
-  });
+  }, { maxWait: 10000, timeout: 20000 });
 
   // Audit log (fire-and-forget, outside tx)
   logAudit({
@@ -434,6 +476,20 @@ export async function withdrawBalance(
     amount: params.amount,
     reference: transferReference,
   });
+
+  void createReminderOnce({
+    businessId,
+    reminderType: 'payout_requested',
+    scheduledDate: new Date(),
+    message: `Withdrawal request of ${formatNaira(params.amount)} received (ref ${transferReference}). We'll notify you once it's reviewed — usually within 1–2 business hours.`,
+    referenceType: 'settlement_payout',
+    referenceId: payout.id,
+  }).catch((err) =>
+    logger.warn('Failed to create payout_requested reminder', {
+      payoutId: payout.id,
+      err: err instanceof Error ? err.message : err,
+    })
+  );
 
   return {
     id: payout.id,
@@ -470,11 +526,30 @@ export async function toggleAutoSplit(
     );
   }
 
+  // PIN verification (outside tx)
+  await pinService.verifyPin(userId, params.pin);
+
+  // Percentage clamps (NEW-8)
+  let splitPct: number;
+  if (params.enabled) {
+    splitPct = params.taxSplitPercentage ?? 7.5;
+    if (splitPct < config.settlement.minTaxSplitPct || splitPct > config.settlement.maxTaxSplitPct) {
+      throw new AppError(
+        400,
+        `Tax split percentage must be between ${config.settlement.minTaxSplitPct}% and ${config.settlement.maxTaxSplitPct}%`,
+        'INVALID_SPLIT_PERCENTAGE'
+      );
+    }
+  } else {
+    // Preserve existing percentage setting on disable
+    splitPct = toNumber(business.taxSplitPercentage) || 7.5;
+  }
+
   const updatedBusiness = await prisma.business.update({
     where: { id: businessId },
     data: {
       autoSplitEnabled: params.enabled,
-      taxSplitPercentage: params.taxSplitPercentage ?? 7.5,
+      taxSplitPercentage: splitPct,
     },
   });
 
@@ -483,7 +558,7 @@ export async function toggleAutoSplit(
     const provider = getPaymentProvider();
     try {
       await provider.updateSubaccount(business.paystackSubaccountCode, {
-        percentageCharge: params.enabled ? params.taxSplitPercentage ?? 7.5 : 0,
+        percentageCharge: params.enabled ? splitPct : 0,
       });
     } catch (err) {
       logger.warn('Could not sync subaccount split percentage with Paystack', {
@@ -502,7 +577,7 @@ export async function toggleAutoSplit(
     resourceId: businessId,
     newData: {
       autoSplitEnabled: params.enabled,
-      taxSplitPercentage: params.taxSplitPercentage ?? 7.5,
+      taxSplitPercentage: splitPct,
     },
   });
 
@@ -715,7 +790,7 @@ export async function adminApproveWithdrawal(adminUserId: string, payoutId: stri
         'ALREADY_PROCESSED'
       );
     }
-  });
+  }, { maxWait: 10000, timeout: 20000 });
 
   // Network IO — outside any transaction (house rule: no DB locks during Paystack calls)
   try {
@@ -771,6 +846,20 @@ export async function adminApproveWithdrawal(adminUserId: string, payoutId: stri
       adminUserId,
     });
 
+    void createReminderOnce({
+      businessId,
+      reminderType: 'payout_approved',
+      scheduledDate: new Date(),
+      message: `Your withdrawal of ${formatNaira(toNumber(payout.amount))} (ref ${payout.transferReference}) was approved. The transfer to your ${payout.destinationBankName} account ••••${payout.destinationAccountNum.slice(-4)} is in progress.`,
+      referenceType: 'settlement_payout',
+      referenceId: payout.id,
+    }).catch((remErr) =>
+      logger.warn('Failed to create payout_approved reminder', {
+        payoutId: payout.id,
+        err: remErr instanceof Error ? remErr.message : remErr,
+      })
+    );
+
     return updated;
   } catch (err) {
     // Release the reservation on Paystack failure
@@ -794,6 +883,20 @@ export async function adminApproveWithdrawal(adminUserId: string, payoutId: stri
           reason: err instanceof Error ? err.message : String(err),
         },
       });
+
+      void createReminderOnce({
+        businessId,
+        reminderType: 'payout_failed',
+        scheduledDate: new Date(),
+        message: `The transfer for your withdrawal of ${formatNaira(toNumber(payout.amount))} could not be initiated; the amount is back in your available balance. Support has been notified.`,
+        referenceType: 'settlement_payout',
+        referenceId: payout.id,
+      }).catch((remErr) =>
+        logger.warn('Failed to create payout_failed reminder on approval error', {
+          payoutId: payout.id,
+          err: remErr instanceof Error ? remErr.message : remErr,
+        })
+      );
     } catch (markErr) {
       logger.error('Failed to mark payout failed after approval transfer error', {
         payoutId: payout.id,
@@ -856,9 +959,19 @@ export async function adminRejectWithdrawal(
     adminUserId,
   });
 
-  // Optional (recommended, NEW-I-adjacent): notify SME with reason
-  // const { createReminderOnce } = await import('@/services/reminder.service');
-  // await createReminderOnce({ ... });
+  void createReminderOnce({
+    businessId: payout.businessId,
+    reminderType: 'payout_rejected',
+    scheduledDate: new Date(),
+    message: `Your withdrawal request of ${formatNaira(toNumber(payout.amount))} was rejected by admin: ${reason}. The funds remain in your available balance.`,
+    referenceType: 'settlement_payout',
+    referenceId: payout.id,
+  }).catch((err) =>
+    logger.warn('Failed to create payout_rejected reminder', {
+      payoutId: payout.id,
+      err: err instanceof Error ? err.message : err,
+    })
+  );
 
   return { id: payout.id, status: 'failed' };
 }

@@ -40,7 +40,7 @@ export async function withdrawBalance(req: AuthenticatedRequest, res: Response) 
     req.params.businessId,
     input
   );
-  res.json({ success: true, data: result, message: 'Balance withdrawal initiated successfully' });
+  res.json({ success: true, data: result, message: 'Withdrawal request submitted (awaiting admin approval)' });
 }
 
 export async function toggleAutoSplit(req: AuthenticatedRequest, res: Response) {

@@ -102,6 +102,27 @@ export interface DvaTransferReceiptData {
   };
 }
 
+// ─── Universal Sales Receipt Data Model ─────────────────────
+export interface SalesReceiptData {
+  receiptNumber: string;
+  transactionReference?: string | null;
+  transactionDate: Date;
+  amount: number;
+  source: 'bank_transfer' | 'paycode' | 'pos' | 'online_store' | 'manual' | 'cash' | 'invoice';
+  sourceLabel: string; // "Bank Transfer", "Cash Sale", "Invoice Payment", etc.
+  customerName?: string | null;
+  description?: string | null;
+  invoiceNumber?: string | null; // For invoice payments
+  business: {
+    businessName: string;
+    ownerName: string;
+    merchantId: string;
+    taxId?: string | null;
+    address?: string | null;
+    logoUrl?: string | null;
+  };
+}
+
 /**
  * Builds a professional PDF receipt for Tax Payment (Stage 1 Collection or Stage 2 FIRS Remittance).
  */
@@ -354,6 +375,154 @@ export async function buildDvaTransferReceiptPdf(data: DvaTransferReceiptData): 
     doc.moveTo(LEFT, footerY).lineTo(RIGHT, footerY).strokeColor(COLORS.hairline).stroke();
     doc.fillColor(COLORS.faint).fontSize(7).font(FONT.regular)
       .text('Powered by PayMyTax by WallX • https://paymytax.com • Generated Electronically', LEFT, footerY + 8, { width: PAGE_WIDTH, align: 'center' });
+
+    doc.end();
+  });
+}
+
+
+
+/**
+ * Builds a universal professional PDF receipt for ANY sales transaction.
+ * Works for: bank transfers, cash, POS, online, manual, invoice payments, etc.
+ */
+export async function buildSalesReceiptPdf(data: SalesReceiptData): Promise<Buffer> {
+  const logoBuffer = data.business.logoUrl ? await fetchLogoForPdf(data.business.logoUrl) : null;
+
+  return new Promise((resolve, reject) => {
+    const doc = new PDFDocument({ 
+      size: 'A4', 
+      margin: 50, 
+      info: { Title: `Sales Receipt ${data.receiptNumber}`, Author: data.business.businessName } 
+    });
+    const chunks: Buffer[] = [];
+
+    doc.on('data', (chunk) => chunks.push(chunk));
+    doc.on('end', () => resolve(Buffer.concat(chunks)));
+    doc.on('error', reject);
+
+    // ── Header Band ──
+    doc.rect(LEFT, 45, PAGE_WIDTH, 70).fillAndStroke('#0f172a', '#0f172a');
+
+    if (logoBuffer) {
+      try {
+        doc.image(logoBuffer, LEFT + 15, 52, { fit: [50, 50] });
+      } catch {
+        // Continue without logo
+      }
+    }
+
+    doc.fillColor('#ffffff').fontSize(15).font(FONT.bold)
+      .text(data.business.businessName, logoBuffer ? LEFT + 75 : LEFT + 20, 58);
+    doc.fillColor('#94a3b8').fontSize(8.5).font(FONT.regular)
+      .text(`Merchant ID: ${data.business.merchantId}`, logoBuffer ? LEFT + 75 : LEFT + 20, 78);
+
+    if (data.business.address) {
+      doc.fillColor('#cbd5e1').fontSize(7.5)
+        .text(data.business.address, logoBuffer ? LEFT + 75 : LEFT + 20, 92, { width: 250 });
+    }
+
+    doc.fontSize(10).font(FONT.bold).fillColor('#ffffff')
+      .text('SALES RECEIPT', LEFT, 60, { width: PAGE_WIDTH - 20, align: 'right' });
+    doc.fontSize(8).font(FONT.regular).fillColor('#cbd5e1')
+      .text(`Receipt #: ${data.receiptNumber}`, LEFT, 76, { width: PAGE_WIDTH - 20, align: 'right' });
+    doc.fontSize(8).font(FONT.regular).fillColor('#cbd5e1')
+      .text(`Date: ${formatDate(data.transactionDate)}`, LEFT, 90, { width: PAGE_WIDTH - 20, align: 'right' });
+
+    doc.y = 135;
+
+    // ── Success Banner ──
+    doc.roundedRect(LEFT, doc.y, PAGE_WIDTH, 26, RADIUS).fillAndStroke('#f0fdf4', '#bbf7d0');
+    doc.fillColor('#166534').fontSize(9).font(FONT.bold)
+      .text('PAYMENT RECEIVED SUCCESSFULLY', LEFT, doc.y + 8, { width: PAGE_WIDTH, align: 'center' });
+
+    doc.moveDown(1.5);
+
+    // ── Amount Card ──
+    const amountCardY = doc.y;
+    doc.roundedRect(LEFT, amountCardY, PAGE_WIDTH, 65, RADIUS).fillAndStroke(COLORS.panel, COLORS.hairline);
+    doc.fillColor(COLORS.muted).fontSize(8.5).font(FONT.bold)
+      .text('TOTAL AMOUNT', LEFT, amountCardY + 12, { width: PAGE_WIDTH, align: 'center' });
+    doc.fillColor(COLORS.accent).fontSize(20).font(FONT.bold)
+      .text(formatMoney(data.amount), LEFT, amountCardY + 28, { width: PAGE_WIDTH, align: 'center' });
+
+    doc.y = amountCardY + 80;
+
+    // ── Transaction Details ──
+    doc.fillColor(COLORS.ink).fontSize(11).font(FONT.bold).text('Transaction Details', LEFT, doc.y);
+    doc.moveDown(0.4);
+
+    const details: Array<{ label: string; value: string }> = [
+      { label: 'Merchant', value: data.business.businessName },
+      { label: 'Payment Method', value: data.sourceLabel },
+      { label: 'Transaction Date', value: formatDateTime(data.transactionDate) },
+    ];
+
+    if (data.customerName) {
+      details.push({ label: 'Customer', value: data.customerName });
+    }
+
+    if (data.invoiceNumber) {
+      details.push({ label: 'Invoice Number', value: data.invoiceNumber });
+    }
+
+    if (data.transactionReference) {
+      details.push({ label: 'Reference', value: data.transactionReference });
+    }
+
+    if (data.description) {
+      details.push({ label: 'Description', value: data.description });
+    }
+
+    if (data.business.taxId) {
+      details.push({ label: 'Merchant Tax ID', value: data.business.taxId });
+    }
+
+    details.push({ label: 'Status', value: 'Confirmed & Recorded' });
+
+    details.forEach((item, idx) => {
+      const rowY = doc.y;
+      const isAlt = idx % 2 === 1;
+      if (isAlt) {
+        doc.rect(LEFT, rowY, PAGE_WIDTH, 22).fill('#fafafa');
+      }
+      doc.fillColor(COLORS.muted).fontSize(8.5).font(FONT.regular);
+      doc.text(item.label, LEFT + 12, rowY + 6);
+      doc.fillColor(COLORS.ink).font(FONT.bold);
+      doc.text(item.value, LEFT + 160, rowY + 6, { width: PAGE_WIDTH - 170, ellipsis: true });
+      doc.y = rowY + 22;
+    });
+
+    doc.moveDown(1.5);
+
+    // ── Tax Notice ──
+    doc.roundedRect(LEFT, doc.y, PAGE_WIDTH, 45, RADIUS).fillAndStroke('#fef3c7', '#fde047');
+    doc.fillColor('#78350f').fontSize(7.5).font(FONT.bold)
+      .text('TAX COMPLIANCE NOTE', LEFT + 12, doc.y + 8);
+    doc.fillColor('#854d0e').fontSize(7.5).font(FONT.regular);
+    doc.text(
+      'This transaction has been recorded in the merchant\'s accounting system for Nigerian tax compliance. ' +
+      'For payment disputes or inquiries, please contact the merchant directly using the details above.',
+      LEFT + 12,
+      doc.y + 18,
+      { width: PAGE_WIDTH - 24 }
+    );
+
+    doc.moveDown(2);
+
+    // ── Thank You Message ──
+    doc.fillColor(COLORS.muted).fontSize(9).font(FONT.bold)
+      .text('Thank you for your business!', LEFT, doc.y, { width: PAGE_WIDTH, align: 'center' });
+
+    // ── Footer ──
+    const footerY = 760;
+    doc.moveTo(LEFT, footerY).lineTo(RIGHT, footerY).strokeColor(COLORS.hairline).stroke();
+    doc.fillColor(COLORS.faint).fontSize(7).font(FONT.regular)
+      .text(
+        'Powered by PayMyTax by WallX • https://paymytax.com • Generated Electronically', 
+        LEFT, footerY + 8, 
+        { width: PAGE_WIDTH, align: 'center' }
+      );
 
     doc.end();
   });

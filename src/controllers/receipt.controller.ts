@@ -36,3 +36,22 @@ export const downloadDvaTransferReceipt = asyncHandler(
     res.send(buffer);
   }
 );
+
+
+
+export const downloadSalesReceipt = asyncHandler(
+  async (req: AuthenticatedRequest, res: Response) => {
+    const { buffer, filename } = await receiptService.getSalesReceipt(
+      req.user!.userId,
+      req.params.businessId,
+      req.params.saleId
+    );
+
+    res.set({
+      'Content-Type': 'application/pdf',
+      'Content-Disposition': `attachment; filename="${filename}"`,
+      'Content-Length': buffer.length.toString(),
+    });
+    res.send(buffer);
+  }
+);
