@@ -23,6 +23,8 @@ router.get('/', asyncHandler(async (req: Request, res: Response) => {
     timestamp: new Date().toISOString(),
     service: 'paymytax-api',
     version: '1.0.0',
+    commit: process.env.RENDER_GIT_COMMIT || 'b74ef60', // Render auto-sets this env var
+    deployedAt: '2026-08-31T15:00:00Z',
   });
 }));
 
