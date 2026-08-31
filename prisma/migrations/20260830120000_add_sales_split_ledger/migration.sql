@@ -1,5 +1,6 @@
 -- AlterTable (idempotent - safe to re-run)
 -- Add columns only if they don't already exist
+-- Updated: 2026-08-31 15:26 UTC - Force Render cache refresh
 DO $$ 
 BEGIN
   IF NOT EXISTS (SELECT 1 FROM information_schema.columns 
