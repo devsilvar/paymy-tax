@@ -64,6 +64,7 @@ export async function createExpense(
       businessId,
       category: input.category,
       description: input.description,
+      categoryDetail: input.categoryDetail ?? null,
       amount: input.amount,
       expenseDate: input.expenseDate,
       receiptUrl: input.receiptUrl,
@@ -78,7 +79,7 @@ export async function createExpense(
     action: 'expense.created',
     resourceType: 'expense',
     resourceId: expense.id,
-    newData: { amount: input.amount, category: input.category, isDeductible: expense.isDeductible },
+    newData: { amount: input.amount, category: input.category, categoryDetail: input.categoryDetail ?? null, isDeductible: expense.isDeductible },
   }, tx);
 
   logger.info('Expense created', { expenseId: expense.id, businessId, userId });
@@ -184,6 +185,7 @@ export async function updateExpense(
   const data: Record<string, any> = {};
   if (input.category !== undefined) data.category = input.category;
   if (input.description !== undefined) data.description = input.description;
+  if (input.categoryDetail !== undefined) data.categoryDetail = input.categoryDetail;
   if (input.amount !== undefined) data.amount = input.amount;
   if (input.expenseDate !== undefined) data.expenseDate = input.expenseDate;
   if (input.receiptUrl !== undefined) data.receiptUrl = input.receiptUrl;

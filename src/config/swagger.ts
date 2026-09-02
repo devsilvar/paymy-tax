@@ -286,7 +286,7 @@ const options: swaggerJsdoc.Options = {
         // ─── Expenses ────────────────────────────────────────
         ExpenseCategory: {
           type: 'string',
-          enum: ['rent', 'inventory', 'salary', 'utility', 'fuel', 'logistics', 'marketing', 'other'],
+          enum: ['rent', 'inventory', 'salary', 'utility', 'fuel', 'logistics', 'marketing', 'gift', 'subscription', 'other'],
         },
         CreateExpenseInput: {
           type: 'object',
@@ -294,6 +294,7 @@ const options: swaggerJsdoc.Options = {
           properties: {
             category: { $ref: '#/components/schemas/ExpenseCategory' },
             description: { type: 'string', minLength: 1, maxLength: 500 },
+            categoryDetail: { type: 'string', minLength: 1, maxLength: 200, description: 'Required when category = other — what the expense actually is' },
             amount: { type: 'number', minimum: 0.01 },
             expenseDate: { type: 'string', format: 'date-time' },
             receiptUrl: { type: 'string', format: 'uri', maxLength: 1000 },
@@ -304,6 +305,7 @@ const options: swaggerJsdoc.Options = {
           properties: {
             category: { $ref: '#/components/schemas/ExpenseCategory' },
             description: { type: 'string', minLength: 1, maxLength: 500 },
+            categoryDetail: { type: 'string', nullable: true, minLength: 1, maxLength: 200, description: 'Required when category = other; null clears it' },
             amount: { type: 'number', minimum: 0.01 },
             expenseDate: { type: 'string', format: 'date-time' },
             receiptUrl: { type: 'string', nullable: true, format: 'uri', maxLength: 1000 },

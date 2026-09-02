@@ -5,8 +5,9 @@ generator client {
 datasource db {
   provider  = "postgresql"
   url       = env("DATABASE_URL")
-  // Optional direct URL for migrations. Defaults to DATABASE_URL if unset.
-  // Only needed for Neon pooled connections; not required for Supabase/Render Postgres.
+  // Migrations MUST bypass the transaction pooler (PgBouncer) — it doesn't
+  // support the advisory locks / session semantics Prisma Migrate needs.
+  directUrl = env("DIRECT_URL")
 }
 
 /// User accounts - business owners and administrators
@@ -175,6 +176,9 @@ model Expense {
   businessId   String          @map("business_id")
   category     ExpenseCategory
   description  String
+  /// Free-text detail captured in the UI when category = 'other'
+  /// (e.g. "Bank charges", "Repairs"). Nullable — only populated for 'other'.
+  categoryDetail String?       @map("category_detail")
   amount       Decimal         @db.Decimal(15, 2)
   expenseDate  DateTime        @map("expense_date") @db.Date
   receiptUrl   String?         @map("receipt_url")
@@ -465,6 +469,8 @@ enum ExpenseCategory {
   fuel
   logistics
   marketing
+  gift
+  subscription
   other
 }
 
