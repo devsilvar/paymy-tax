@@ -151,3 +151,21 @@ export const passwordResetRateLimiter = rateLimit({
   standardHeaders: true,
   legacyHeaders: false,
 });
+
+/**
+ * Strict rate limiter for sensitive PII reveal endpoints (BVN/NIN)
+ * Prevents automated PIN probing or credential stuffing against reveal routes.
+ */
+export const bvnRevealRateLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000, // 15 minutes
+  max: config.app.isDevelopment ? 50 : 5, // 5 attempts per window (relaxed in dev/test)
+  skipSuccessfulRequests: false,
+  message: {
+    error: {
+      code: 'BVN_REVEAL_RATE_LIMIT_EXCEEDED',
+      message: 'Too many BVN reveal attempts. Please try again in 15 minutes.',
+    },
+  },
+  standardHeaders: true,
+  legacyHeaders: false,
+});

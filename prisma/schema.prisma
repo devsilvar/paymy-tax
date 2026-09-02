@@ -15,12 +15,10 @@ model User {
   email               String     @unique
   passwordHash        String     @map("password_hash")
   phone               String?    @unique
-  // VarChar(12) — real Nigerian BVNs are 11 digits, but Paystack's official
-  // documented test-mode identity-validation fixture is a 12-digit value
-  // ("222222222221"). Widened so the sandbox credential can actually be
-  // stored; see check_bvn_length in migration 20260817120000_add_dva_failure_tracking.
-  bvn                 String?    @map("bvn") @db.VarChar(12)
-  nin                 String?    @map("nin") @db.VarChar(11)
+  // Encrypted at rest via AES-256-GCM (envelope format: v1.<iv>.<tag>.<ct>).
+  // Column type is TEXT to accommodate ~100-char ciphertext strings.
+  bvnEncrypted        String?    @map("bvn_encrypted")
+  ninEncrypted        String?    @map("nin_encrypted")
   bvnVerifiedAt       DateTime?  @map("bvn_verified_at")
   ninVerifiedAt       DateTime?  @map("nin_verified_at")
   isVerified          Boolean    @default(false) @map("is_verified")
@@ -42,7 +40,6 @@ model User {
 
   @@index([email])
   @@index([phone])
-  @@index([bvn])
   @@map("users")
 }
 
@@ -80,6 +77,13 @@ model Business {
   dvaFailedAt             DateTime? @map("dva_failed_at")
   logoUrl                 String?   @map("logo_url")
   logoPublicId            String?   @map("logo_public_id")
+  // Paystack transfer recipient — created on first approved payout, reused while
+  // the settlement bank account is unchanged. recipientFingerprint guards reuse:
+  // it is `bankCode:accountNumber` of the settlement account the code was built
+  // for; a bank change produces a new fingerprint, so the stale code is never
+  // reused (self-invalidating — no explicit wipe needed).
+  paystackRecipientCode   String?   @map("paystack_recipient_code")
+  recipientFingerprint    String?   @map("recipient_fingerprint")
   // Payout account change lock — admin-granted one-time permission (24h expiry)
   payoutChangePermitted   Boolean   @default(false) @map("payout_change_permitted")
   payoutChangePermittedAt DateTime? @map("payout_change_permitted_at")

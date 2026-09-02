@@ -19,6 +19,7 @@ export const connectSettlementSchema = z.object({
     .string()
     .regex(/^\d{4}$/, 'Transaction PIN must be exactly 4 digits')
     .optional(),
+  stepUpToken: z.string().min(20, 'Invalid step-up token').optional(),
 });
 
 export const withdrawBalanceSchema = z.object({
@@ -28,14 +29,20 @@ export const withdrawBalanceSchema = z.object({
     .min(100, 'Minimum withdrawal amount is ₦100.00'),
   pin: z
     .string()
-    .regex(/^\d{4}$/, 'Transaction PIN must be exactly 4 digits'),
+    .regex(/^\d{4}$/, 'Transaction PIN must be exactly 4 digits')
+    .optional(),
+  stepUpToken: z.string().min(20, 'Invalid step-up token').optional(),
   narration: z.string().trim().max(100, 'Narration cannot exceed 100 characters').optional(),
 });
 
 export const toggleAutoSplitSchema = z.object({
   enabled: z.boolean(),
   taxSplitPercentage: z.number().min(0).max(100).optional().default(7.5),
-  pin: z.string().regex(/^\d{4}$/, 'Transaction PIN must be exactly 4 digits'),
+  pin: z
+    .string()
+    .regex(/^\d{4}$/, 'Transaction PIN must be exactly 4 digits')
+    .optional(),
+  stepUpToken: z.string().min(20, 'Invalid step-up token').optional(),
 });
 
 export const payoutHistoryQuerySchema = z.object({

@@ -147,7 +147,8 @@ export const listWithdrawalRequests = asyncHandler(
 
     res.status(200).json({
       success: true,
-      ...result,
+      data: result.data,
+      pagination: result.pagination,
     });
   }
 );
@@ -193,3 +194,19 @@ export const rejectWithdrawalRequest = asyncHandler(
     });
   }
 );
+
+export const requeryWithdrawalRequest = asyncHandler(
+  async (req: AuthenticatedRequest, res: Response) => {
+    const result = await settlementService.adminRequeryWithdrawal(
+      req.user!.userId,
+      req.params.id
+    );
+
+    res.status(200).json({
+      success: true,
+      data: result.payout,
+      message: result.message,
+    });
+  }
+);
+

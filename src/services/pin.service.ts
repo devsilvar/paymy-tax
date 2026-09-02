@@ -1,4 +1,5 @@
 import bcrypt from 'bcrypt';
+import jwt from 'jsonwebtoken';
 import prisma from '@/lib/prisma';
 import config from '@/config';
 import logger from '@/lib/logger';
@@ -7,6 +8,52 @@ import { logAudit } from '@/lib/audit';
 import { SetupPinInput, ChangePinInput } from '@/validators/pin.validator';
 
 const BCRYPT_ROUNDS = 12;
+
+/**
+ * Issues a short-lived (5-minute) step-up token upon successful PIN verification.
+ */
+export function issueStepUpToken(userId: string): string {
+  return jwt.sign(
+    { sub: userId, type: 'pin_step_up' },
+    config.jwt.accessSecret,
+    { expiresIn: '5m' }
+  );
+}
+
+/**
+ * Verifies a step-up token ensuring it is valid, not expired, belongs to the user,
+ * and carries the correct pin_step_up type discriminator.
+ */
+export function verifyStepUpToken(userId: string, token: string): void {
+  try {
+    const payload = jwt.verify(token, config.jwt.accessSecret) as jwt.JwtPayload;
+    if (payload.type !== 'pin_step_up' || payload.sub !== userId) {
+      throw new AppError(401, 'Invalid or expired step-up authorization token', 'INVALID_STEP_UP_TOKEN');
+    }
+  } catch (err) {
+    if (err instanceof AppError) throw err;
+    throw new AppError(401, 'Invalid or expired step-up authorization token', 'INVALID_STEP_UP_TOKEN');
+  }
+}
+
+/**
+ * Dual-accept authorization helper for sensitive money mutations.
+ * Accepts either a valid stepUpToken or raw PIN (retaining e2e test backward compatibility).
+ */
+export async function assertTransactionAuthorization(
+  userId: string,
+  cred: { pin?: string; stepUpToken?: string }
+): Promise<void> {
+  if (cred.stepUpToken) {
+    verifyStepUpToken(userId, cred.stepUpToken);
+    return;
+  }
+  if (cred.pin) {
+    await verifyPin(userId, cred.pin);
+    return;
+  }
+  throw new AppError(400, 'Transaction PIN or step-up token is required', 'MISSING_PIN_CREDENTIAL');
+}
 
 export interface PinStatusResponse {
   hasPin: boolean;
@@ -107,7 +154,7 @@ export async function verifyPin(
   pin: string,
   ipAddress?: string,
   userAgent?: string
-): Promise<{ valid: boolean }> {
+): Promise<{ valid: boolean; stepUpToken: string }> {
   const user = await prisma.user.findUnique({
     where: { id: userId },
     select: {
@@ -207,7 +254,8 @@ export async function verifyPin(
     });
   }
 
-  return { valid: true };
+  const stepUpToken = issueStepUpToken(userId);
+  return { valid: true, stepUpToken };
 }
 
 export async function changePin(

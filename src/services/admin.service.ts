@@ -1,28 +1,55 @@
 import prisma, { TxClient } from '@/lib/prisma';
 import { AppError } from '@/middleware/errorHandler';
 import { logAudit } from '@/lib/audit';
+import config from '@/config';
 
 export async function getDashboardStats() {
-  const [totalUsers, totalBusinesses, totalTaxReports, recentSignups] =
-    await Promise.all([
-      prisma.user.count(),
-      prisma.business.count(),
-      prisma.monthlyTaxReport.count(),
-      prisma.user.findMany({
-        where: {
-          createdAt: {
-            gte: new Date(Date.now() - 30 * 24 * 60 * 60 * 1000),
-          },
+  const staleHours = config.settlement.payoutStaleHours ?? 24;
+  const slaThreshold = new Date(Date.now() - staleHours * 60 * 60 * 1000);
+
+  const [
+    totalUsers,
+    totalBusinesses,
+    totalTaxReports,
+    recentSignups,
+    pendingCount,
+    breachedCount,
+    oldestPending,
+  ] = await Promise.all([
+    prisma.user.count(),
+    prisma.business.count(),
+    prisma.monthlyTaxReport.count(),
+    prisma.user.findMany({
+      where: {
+        createdAt: {
+          gte: new Date(Date.now() - 30 * 24 * 60 * 60 * 1000),
         },
-        select: {
-          id: true,
-          email: true,
-          createdAt: true,
-        },
-        orderBy: { createdAt: 'desc' },
-        take: 10,
-      }),
-    ]);
+      },
+      select: {
+        id: true,
+        email: true,
+        createdAt: true,
+      },
+      orderBy: { createdAt: 'desc' },
+      take: 10,
+    }),
+    prisma.settlementPayout.count({ where: { status: 'pending' } }),
+    prisma.settlementPayout.count({
+      where: {
+        status: 'pending',
+        createdAt: { lt: slaThreshold },
+      },
+    }),
+    prisma.settlementPayout.findFirst({
+      where: { status: 'pending' },
+      orderBy: { createdAt: 'asc' },
+      select: { createdAt: true },
+    }),
+  ]);
+
+  const oldestPendingHours = oldestPending
+    ? Math.max(0, Math.floor((Date.now() - oldestPending.createdAt.getTime()) / (1000 * 60 * 60)))
+    : 0;
 
   const revenueResult = await prisma.monthlyTaxReport.aggregate({
     _sum: { totalSales: true },
@@ -34,6 +61,11 @@ export async function getDashboardStats() {
     totalTaxReports,
     totalRevenueProcessed: revenueResult._sum.totalSales ?? 0,
     recentSignups,
+    withdrawalSla: {
+      pendingCount,
+      breachedCount,
+      oldestPendingHours,
+    },
   };
 }
 

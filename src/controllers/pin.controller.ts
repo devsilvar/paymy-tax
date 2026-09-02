@@ -32,6 +32,7 @@ export const verify = asyncHandler(async (req: AuthenticatedRequest, res: Respon
     success: true,
     data: {
       valid: result.valid,
+      stepUpToken: result.stepUpToken,
     },
     message: 'Transaction PIN verified successfully',
   });

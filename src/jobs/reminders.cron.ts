@@ -30,6 +30,7 @@ import {
   generateRemindersForAllBusinesses,
   sweepOverdueInvoicesForBusiness,
 } from '@/services/reminder.service';
+import { sweepStalePayouts } from '@/services/settlement.service';
 
 // Arbitrary 32-bit int. Document new lock keys here so they don't collide.
 //   947362 — daily reminder sweep
@@ -69,6 +70,7 @@ export async function runDailySweep(): Promise<void> {
   try {
     const tax = await generateRemindersForAllBusinesses();
     const invoice = await sweepOverdueInvoicesForBusiness();
+    const stalePayouts = await sweepStalePayouts();
 
     logger.info('Reminder cron sweep: done', {
       businessesProcessed: tax.processed,
@@ -76,6 +78,12 @@ export async function runDailySweep(): Promise<void> {
       deadlinesCreated: tax.deadlinesCreated,
       invoiceRemindersCreated: invoice.remindersCreated,
       invoicesFlippedToOverdue: invoice.statusFlipped,
+      stalePayouts: {
+        checked: stalePayouts.checked,
+        completed: stalePayouts.completed,
+        failed: stalePayouts.failed,
+        stillPending: stalePayouts.stillPending,
+      },
     });
   } catch (err) {
     logger.error('Reminder cron sweep: failed', {

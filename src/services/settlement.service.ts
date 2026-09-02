@@ -1,6 +1,7 @@
 import prisma from '@/lib/prisma';
 import { Prisma } from '@prisma/client';
 import { getPaymentProvider } from '@/lib/payment';
+import type { PaymentProvider } from '@/lib/payment/types';
 import { AppError } from '@/middleware/errorHandler';
 import { logAudit } from '@/lib/audit';
 import logger from '@/lib/logger';
@@ -16,6 +17,46 @@ import {
   ConnectSettlementInput,
   ResolveSettlementInput,
 } from '@/validators/settlement.validator';
+
+/**
+ * Helper to resolve Paystack transfer recipient code.
+ * Reuses stored code ONLY if the stored recipientFingerprint matches the
+ * destinationBankCode:destinationAccountNum snapshot of the approved payout.
+ */
+async function resolveRecipientCode(
+  provider: PaymentProvider,
+  payout: {
+    destinationBankCode: string;
+    destinationAccountNum: string;
+    destinationAccountName: string;
+    businessId: string;
+    businessName: string;
+  },
+  stored: { paystackRecipientCode?: string | null; recipientFingerprint?: string | null },
+): Promise<{ recipientCode: string; reused: boolean }> {
+  // Fingerprint of the account THIS payout is destined for (the approved snapshot)
+  const fingerprint = `${payout.destinationBankCode}:${payout.destinationAccountNum}`;
+
+  // Reuse ONLY when the stored code was provably built for this exact destination
+  if (stored.paystackRecipientCode && stored.recipientFingerprint === fingerprint) {
+    return { recipientCode: stored.paystackRecipientCode, reused: true }; // fast path — zero Paystack calls
+  }
+
+  const { recipientCode } = await provider.createTransferRecipient({
+    type: 'nuban',
+    name: payout.destinationAccountName,
+    accountNumber: payout.destinationAccountNum,
+    bankCode: payout.destinationBankCode,
+    currency: 'NGN',
+    description: `Payout for ${payout.businessName}`,
+  });
+
+  await prisma.business.update({
+    where: { id: payout.businessId },
+    data: { paystackRecipientCode: recipientCode, recipientFingerprint: fingerprint },
+  });
+  return { recipientCode, reused: false };
+}
 
 function toNumber(val: unknown): number {
   if (val == null) return 0;
@@ -243,15 +284,8 @@ export async function connectSettlementBank(
   if (isChange) {
     assertPayoutChangeAllowed(business);
     
-    // 2. Require PIN step-up for money-path changes
-    if (!params.pin) {
-      throw new AppError(
-        400,
-        'Transaction PIN is required to change your payout account',
-        'PIN_REQUIRED'
-      );
-    }
-    await pinService.verifyPin(userId, params.pin);
+    // 2. Require PIN step-up or authorization token for money-path changes
+    await pinService.assertTransactionAuthorization(userId, params);
   }
 
   // 3. Re-resolve server-side (never trust client-supplied name)
@@ -372,8 +406,8 @@ export async function withdrawBalance(
     );
   }
 
-  // 2. Verify 4-digit transaction PIN (with lockout protection & bcrypt outside DB tx)
-  await pinService.verifyPin(userId, params.pin);
+  // 2. Verify transaction authorization (PIN or step-up token with lockout protection & bcrypt outside DB tx)
+  await pinService.assertTransactionAuthorization(userId, params);
 
   // 3. Generate unique transfer reference BEFORE the transaction
   // (crypto-grade, Paystack-safe charset, ≤50 chars)
@@ -526,8 +560,8 @@ export async function toggleAutoSplit(
     );
   }
 
-  // PIN verification (outside tx)
-  await pinService.verifyPin(userId, params.pin);
+  // PIN or step-up token verification (outside tx)
+  await pinService.assertTransactionAuthorization(userId, params);
 
   // Percentage clamps (NEW-8)
   let splitPct: number;
@@ -686,26 +720,32 @@ export async function adminListWithdrawalRequests(query: {
   ]);
 
   const totalPages = Math.ceil(total / limit) || 1;
+  const staleHours = config.settlement.payoutStaleHours ?? 24;
+  const staleThreshold = new Date(Date.now() - staleHours * 60 * 60 * 1000);
+
+  const mapped = items.map((p) => ({
+    id: p.id,
+    businessId: p.businessId,
+    businessName: p.business.businessName,
+    merchantId: p.business.merchantId,
+    userEmail: p.business.user.email,
+    amount: toNumber(p.amount),
+    destinationBankName: p.destinationBankName,
+    destinationAccountNum: `•••• ${p.destinationAccountNum.slice(-4)}`, // Masked
+    destinationAccountName: p.destinationAccountName,
+    transferReference: p.transferReference,
+    status: p.status,
+    isStale: p.status === 'processing' && p.initiatedAt < staleThreshold,
+    narration: p.narration,
+    failureReason: p.failureReason,
+    initiatedAt: p.initiatedAt,
+    completedAt: p.completedAt,
+    createdAt: p.createdAt,
+  }));
 
   return {
-    items: items.map((p) => ({
-      id: p.id,
-      businessId: p.businessId,
-      businessName: p.business.businessName,
-      merchantId: p.business.merchantId,
-      userEmail: p.business.user.email,
-      amount: toNumber(p.amount),
-      destinationBankName: p.destinationBankName,
-      destinationAccountNum: `•••• ${p.destinationAccountNum.slice(-4)}`, // Masked
-      destinationAccountName: p.destinationAccountName,
-      transferReference: p.transferReference,
-      status: p.status,
-      narration: p.narration,
-      failureReason: p.failureReason,
-      initiatedAt: p.initiatedAt,
-      completedAt: p.completedAt,
-      createdAt: p.createdAt,
-    })),
+    data: mapped,
+    items: mapped,
     pagination: {
       page,
       limit,
@@ -781,7 +821,7 @@ export async function adminApproveWithdrawal(adminUserId: string, payoutId: stri
     // Only one admin can claim a 'pending' row; second click gets count=0
     const res = await tx.settlementPayout.updateMany({
       where: { id: payout.id, status: 'pending' },
-      data: { status: 'processing' },
+      data: { status: 'processing', initiatedAt: new Date() },
     });
     if (res.count === 0) {
       throw new AppError(
@@ -794,21 +834,24 @@ export async function adminApproveWithdrawal(adminUserId: string, payoutId: stri
 
   // Network IO — outside any transaction (house rule: no DB locks during Paystack calls)
   try {
-    // Create transfer recipient
-    const recipient = await provider.createTransferRecipient({
-      type: 'nuban',
-      name: payout.destinationAccountName,
-      accountNumber: payout.destinationAccountNum,
-      bankCode: payout.destinationBankCode,
-      currency: 'NGN',
-      description: `Payout for ${payout.business.businessName}`,
-    });
+    // Resolve transfer recipient (reuse existing if unchanged, create new if changed/first time)
+    const { recipientCode, reused } = await resolveRecipientCode(
+      provider,
+      {
+        destinationBankCode: payout.destinationBankCode,
+        destinationAccountNum: payout.destinationAccountNum,
+        destinationAccountName: payout.destinationAccountName,
+        businessId: payout.businessId,
+        businessName: payout.business.businessName,
+      },
+      payout.business
+    );
 
     // Initiate transfer with pre-generated reference (from request time)
     const transferResult = await provider.initiateTransfer({
       source: 'balance',
       amount: toNumber(payout.amount),
-      recipient: recipient.recipientCode,
+      recipient: recipientCode,
       reason: payout.narration || `Balance withdrawal for ${payout.business.businessName}`,
       reference: payout.transferReference,
     });
@@ -835,6 +878,7 @@ export async function adminApproveWithdrawal(adminUserId: string, payoutId: stri
         amount: toNumber(payout.amount),
         transferReference: payout.transferReference,
         paystackTransferCode: transferResult.transferCode,
+        recipientReused: reused,
       },
     });
 
@@ -843,6 +887,7 @@ export async function adminApproveWithdrawal(adminUserId: string, payoutId: stri
       businessId,
       amount: toNumber(payout.amount),
       reference: payout.transferReference,
+      recipientReused: reused,
       adminUserId,
     });
 
@@ -862,6 +907,21 @@ export async function adminApproveWithdrawal(adminUserId: string, payoutId: stri
 
     return updated;
   } catch (err) {
+    // Failure self-heal: if error is recipient-related, clear stored recipient on business
+    const errorMsg = err instanceof Error ? err.message : String(err);
+    if (errorMsg.toLowerCase().includes('recipient')) {
+      logger.warn('Clearing stored recipient code on business due to recipient error', {
+        businessId,
+        error: errorMsg,
+      });
+      await prisma.business.update({
+        where: { id: businessId },
+        data: { paystackRecipientCode: null, recipientFingerprint: null },
+      }).catch((clearErr) => {
+        logger.warn('Failed to clear invalid recipient code on business', { businessId, clearErr });
+      });
+    }
+
     // Release the reservation on Paystack failure
     // (late transfer.success webhook self-heals failed→completed if it actually succeeded)
     try {
@@ -975,3 +1035,283 @@ export async function adminRejectWithdrawal(
 
   return { id: payout.id, status: 'failed' };
 }
+
+/**
+ * Shared outcome applier for payout transfers (webhooks + stale sweep + manual requery).
+ * 
+ * Guard semantics:
+ * - success: updates status from 'processing' or 'failed' to 'completed' (preserves self-heal on late success webhook)
+ * - failed: updates status from 'processing' to 'failed' (prevents regressing 'completed' payouts)
+ * - no-op: if 0 rows updated, logs warning and skips reminder
+ */
+export async function applyTransferOutcome(
+  payoutId: string,
+  outcome: 'success' | 'failed',
+  failureReason?: string,
+  meta?: { reference?: string; transferCode?: string }
+): Promise<{ applied: boolean; payout: any }> {
+  const payout = await prisma.settlementPayout.findUnique({
+    where: { id: payoutId },
+    include: { business: true },
+  });
+
+  if (!payout) {
+    logger.warn('applyTransferOutcome: payout not found', { payoutId, outcome });
+    return { applied: false, payout: null };
+  }
+
+  const ref = meta?.reference || payout.transferReference;
+  const transferCode = meta?.transferCode || payout.paystackTransferCode;
+
+  if (outcome === 'success') {
+    const res = await prisma.settlementPayout.updateMany({
+      where: {
+        id: payoutId,
+        status: { in: ['processing', 'failed'] },
+      },
+      data: {
+        status: 'completed',
+        completedAt: new Date(),
+      },
+    });
+
+    if (res.count === 0) {
+      logger.warn('applyTransferOutcome: guarded success update matched 0 rows (already terminal or completed)', {
+        payoutId,
+        currentStatus: payout.status,
+      });
+      return { applied: false, payout };
+    }
+
+    logAudit({
+      businessId: payout.businessId,
+      action: 'settlement.payout_completed',
+      resourceType: 'settlement_payout',
+      resourceId: payout.id,
+      newData: { reference: ref, transferCode },
+    });
+
+    logger.info('Settlement payout marked completed', {
+      payoutId: payout.id,
+      reference: ref,
+    });
+
+    void createReminderOnce({
+      businessId: payout.businessId,
+      reminderType: 'payout_completed',
+      scheduledDate: new Date(),
+      message: `Your withdrawal of ${formatNaira(toNumber(payout.amount))} (ref ${ref || payout.transferReference}) was successfully transferred to your ${payout.destinationBankName} account.`,
+      referenceType: 'settlement_payout',
+      referenceId: payout.id,
+    }).catch((err) =>
+      logger.warn('Failed to create payout_completed reminder', {
+        payoutId: payout.id,
+        err: err instanceof Error ? err.message : err,
+      })
+    );
+
+    return { applied: true, payout };
+  } else {
+    const reason = failureReason || 'Transfer could not be completed';
+    const res = await prisma.settlementPayout.updateMany({
+      where: {
+        id: payoutId,
+        status: 'processing',
+      },
+      data: {
+        status: 'failed',
+        failureReason: reason,
+      },
+    });
+
+    if (res.count === 0) {
+      logger.warn('applyTransferOutcome: guarded failure update matched 0 rows (already terminal or not in processing)', {
+        payoutId,
+        currentStatus: payout.status,
+      });
+      return { applied: false, payout };
+    }
+
+    logAudit({
+      businessId: payout.businessId,
+      action: 'settlement.payout_failed',
+      resourceType: 'settlement_payout',
+      resourceId: payout.id,
+      newData: { reference: ref, transferCode, reason },
+    });
+
+    logger.info('Settlement payout marked failed', {
+      payoutId: payout.id,
+      reference: ref,
+      reason,
+    });
+
+    void createReminderOnce({
+      businessId: payout.businessId,
+      reminderType: 'payout_failed',
+      scheduledDate: new Date(),
+      message: `Your withdrawal transfer of ${formatNaira(toNumber(payout.amount))} (ref ${ref || payout.transferReference}) failed: ${reason}. The funds remain available in your balance.`,
+      referenceType: 'settlement_payout',
+      referenceId: payout.id,
+    }).catch((err) =>
+      logger.warn('Failed to create payout_failed reminder', {
+        payoutId: payout.id,
+        err: err instanceof Error ? err.message : err,
+      })
+    );
+
+    return { applied: true, payout };
+  }
+}
+
+/**
+ * Daily sweep of stale 'processing' payouts.
+ * Runs in node-cron inside Postgres advisory lock.
+ */
+export async function sweepStalePayouts(): Promise<{
+  checked: number;
+  completed: number;
+  failed: number;
+  stillPending: number;
+}> {
+  const staleHours = config.settlement.payoutStaleHours ?? 24;
+  const cutoff = new Date(Date.now() - staleHours * 60 * 60 * 1000);
+
+  const stalePayouts = await prisma.settlementPayout.findMany({
+    where: {
+      status: 'processing',
+      initiatedAt: { lt: cutoff },
+    },
+  });
+
+  const provider = getPaymentProvider();
+  let completed = 0;
+  let failed = 0;
+  let stillPending = 0;
+
+  for (const payout of stalePayouts) {
+    try {
+      const verifyRes = await provider.verifyTransfer(payout.transferReference);
+      if (verifyRes.status === 'success') {
+        const { applied } = await applyTransferOutcome(payout.id, 'success');
+        if (applied) completed++;
+      } else if (verifyRes.status === 'failed' || verifyRes.status === 'reversed') {
+        const reason = verifyRes.failureReason || 'Bank transfer failed or was reversed';
+        const { applied } = await applyTransferOutcome(payout.id, 'failed', reason);
+        if (applied) failed++;
+      } else {
+        // 'otp' or 'pending'
+        stillPending++;
+        logger.info('Stale payout verification still pending at provider', {
+          payoutId: payout.id,
+          reference: payout.transferReference,
+          status: verifyRes.status,
+        });
+      }
+    } catch (err: unknown) {
+      const errMsg = err instanceof Error ? err.message : String(err);
+      if (errMsg.toLowerCase().includes('not found') || (err as any)?.statusCode === 404) {
+        logger.warn('Stale payout transfer not found at provider — marking failed', {
+          payoutId: payout.id,
+          reference: payout.transferReference,
+        });
+        const { applied } = await applyTransferOutcome(
+          payout.id,
+          'failed',
+          'Transfer not found at provider — initiation never completed'
+        );
+        if (applied) failed++;
+      } else {
+        logger.warn('Failed to verify stale payout transfer', {
+          payoutId: payout.id,
+          reference: payout.transferReference,
+          error: errMsg,
+        });
+        stillPending++;
+      }
+    }
+  }
+
+  return {
+    checked: stalePayouts.length,
+    completed,
+    failed,
+    stillPending,
+  };
+}
+
+/**
+ * ADMIN: Manually re-query a processing withdrawal request against Paystack.
+ */
+export async function adminRequeryWithdrawal(adminUserId: string, payoutId: string) {
+  const payout = await prisma.settlementPayout.findUnique({
+    where: { id: payoutId },
+    include: { business: true },
+  });
+
+  if (!payout) {
+    throw new AppError(404, 'Withdrawal request not found', 'PAYOUT_NOT_FOUND');
+  }
+
+  if (payout.status !== 'processing') {
+    throw new AppError(
+      409,
+      `Cannot re-query payout with status '${payout.status}'. Only 'processing' payouts can be re-queried.`,
+      'PAYOUT_NOT_PROCESSABLE'
+    );
+  }
+
+  const provider = getPaymentProvider();
+  let outcomeStatus: string = 'pending';
+  let message: string = 'Transfer is still pending at Paystack.';
+
+  try {
+    const verifyRes = await provider.verifyTransfer(payout.transferReference);
+    outcomeStatus = verifyRes.status;
+
+    if (verifyRes.status === 'success') {
+      await applyTransferOutcome(payout.id, 'success');
+      message = 'Transfer verified as completed.';
+    } else if (verifyRes.status === 'failed' || verifyRes.status === 'reversed') {
+      const reason = verifyRes.failureReason || 'Bank transfer failed or was reversed';
+      await applyTransferOutcome(payout.id, 'failed', reason);
+      message = `Transfer failed: ${reason}`;
+    } else if (verifyRes.status === 'otp') {
+      message = 'Transfer is awaiting OTP resolution at Paystack.';
+    }
+  } catch (err: unknown) {
+    const errMsg = err instanceof Error ? err.message : String(err);
+    if (errMsg.toLowerCase().includes('not found') || (err as any)?.statusCode === 404) {
+      outcomeStatus = 'failed';
+      const reason = 'Transfer not found at provider — initiation never completed';
+      await applyTransferOutcome(payout.id, 'failed', reason);
+      message = `Transfer marked failed: ${reason}`;
+    } else {
+      throw new AppError(502, `Failed to re-query Paystack: ${errMsg}`, 'PAYSTACK_ERROR');
+    }
+  }
+
+  logAudit({
+    userId: adminUserId,
+    businessId: payout.businessId,
+    action: 'settlement.payout_requeried',
+    resourceType: 'settlement_payout',
+    resourceId: payout.id,
+    newData: {
+      transferReference: payout.transferReference,
+      outcomeStatus,
+      message,
+    },
+  });
+
+  const updated = await prisma.settlementPayout.findUnique({
+    where: { id: payoutId },
+  });
+
+  return {
+    payout: updated,
+    outcomeStatus,
+    message,
+  };
+}
+

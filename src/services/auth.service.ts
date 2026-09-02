@@ -6,9 +6,11 @@ import prisma from '@/lib/prisma';
 import logger from '@/lib/logger';
 import { AppError } from '@/middleware/errorHandler';
 import { JWTPayload } from '@/types';
-import { RegisterInput, LoginInput } from '@/validators/auth.validator';
+import { RegisterInput, LoginInput, RevealBvnInput } from '@/validators/auth.validator';
 import { logAudit } from '@/lib/audit';
 import { recordSession, hashRefreshToken } from './session.service';
+import { decryptPii } from '@/lib/encryption';
+import { assertTransactionAuthorization } from '@/services/pin.service';
 
 // Optimized for small container CPU (0.5 CPU): 10 rounds = ~80ms vs 12 rounds = ~350-600ms
 // Industry standard is 10 rounds (2^10 = 1024 iterations), sufficient for 2026 threat model
@@ -27,7 +29,16 @@ function generateTokens(payload: { userId: string; email: string; role: string }
 }
 
 function sanitizeUser(user: any) {
-  const { passwordHash, ...rest } = user;
+  const {
+    passwordHash,
+    transactionPin,
+    resetTokenHash,
+    bvnEncrypted,
+    ninEncrypted,
+    bvn,
+    nin,
+    ...rest
+  } = user;
   return rest;
 }
 
@@ -408,4 +419,48 @@ export async function resetPassword(token: string, newPassword: string) {
   logger.info('Password reset completed', { userId: user.id });
 
   return { message: 'Password has been reset successfully. You can now log in with your new password.' };
+}
+
+/**
+ * Securely reveals the user's BVN after verifying transaction authorization (PIN or step-up token).
+ * Decrypts AES-256-GCM ciphertext stored at rest and logs an audit trail.
+ */
+export async function revealBvn(
+  userId: string,
+  cred: RevealBvnInput,
+  ipAddress?: string,
+  userAgent?: string
+): Promise<string> {
+  // 1. Authorize via transaction PIN or 5-minute step-up token
+  await assertTransactionAuthorization(userId, cred);
+
+  // 2. Fetch encrypted BVN from User model
+  const user = await prisma.user.findUnique({
+    where: { id: userId },
+    select: { id: true, bvnEncrypted: true },
+  });
+
+  if (!user) {
+    throw new AppError(404, 'User not found', 'USER_NOT_FOUND');
+  }
+
+  if (!user.bvnEncrypted) {
+    throw new AppError(404, 'BVN has not been registered or verified yet', 'BVN_NOT_FOUND');
+  }
+
+  // 3. Decrypt AES-256-GCM ciphertext
+  const plaintextBvn = decryptPii(user.bvnEncrypted);
+
+  // 4. Fire-and-forget audit log (never logs the plaintext BVN or ciphertext)
+  logAudit({
+    userId,
+    action: 'user.bvn_revealed',
+    resourceType: 'user',
+    resourceId: userId,
+    ipAddress,
+    userAgent,
+    newData: { method: cred.stepUpToken ? 'step_up_token' : 'pin' },
+  });
+
+  return plaintextBvn;
 }

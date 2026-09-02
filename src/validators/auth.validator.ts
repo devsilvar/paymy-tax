@@ -73,6 +73,11 @@ export const resetPasswordSchema = z.object({
     ),
 });
 
+export const revealBvnSchema = z.object({
+  pin: z.string().regex(/^\d{4}$/, 'Transaction PIN must be exactly 4 digits').optional(),
+  stepUpToken: z.string().min(20, 'Invalid step-up token').optional(),
+});
+
 export type RegisterInput = z.infer<typeof registerSchema>;
 export type LoginInput = z.infer<typeof loginSchema>;
 export type RefreshTokenInput = z.infer<typeof refreshTokenSchema>;
@@ -80,3 +85,4 @@ export type ChangePasswordInput = z.infer<typeof changePasswordSchema>;
 export type ForgotPasswordInput = z.infer<typeof forgotPasswordSchema>;
 export type UpdateMeInput = z.infer<typeof updateMeSchema>;
 export type ResetPasswordInput = z.infer<typeof resetPasswordSchema>;
+export type RevealBvnInput = z.infer<typeof revealBvnSchema>;

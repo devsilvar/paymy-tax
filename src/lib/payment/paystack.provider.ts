@@ -22,6 +22,7 @@ import {
   CreateTransferRecipientResult,
   InitiateTransferParams,
   InitiateTransferResult,
+  VerifyTransferResult,
 } from './types';
 
 const BASE_URL = 'https://api.paystack.co';
@@ -505,5 +506,41 @@ export class PaystackProvider implements PaymentProvider {
       reference: params.reference,
       amount: params.amount,
     };
+  }
+
+  /**
+   * Verify transfer status by reference
+   */
+  async verifyTransfer(reference: string): Promise<VerifyTransferResult> {
+    try {
+      const data = await this.request('GET', `/transfer/verify/${encodeURIComponent(reference)}`);
+      const statusRaw = (data?.status || '').toLowerCase();
+      let status: VerifyTransferResult['status'];
+      if (statusRaw === 'success') {
+        status = 'success';
+      } else if (statusRaw === 'failed') {
+        status = 'failed';
+      } else if (statusRaw === 'reversed') {
+        status = 'reversed';
+      } else if (statusRaw === 'otp') {
+        status = 'otp';
+      } else {
+        status = 'pending';
+      }
+
+      return {
+        status,
+        failureReason: data?.reason || data?.complete_message || undefined,
+      };
+    } catch (err: unknown) {
+      if (this.shouldUseBankFixture()) {
+        logger.warn('Paystack bank fixture used — returning simulated pending transfer verification', {
+          op: 'verifyTransfer',
+          reference,
+        });
+        return { status: 'pending' };
+      }
+      throw err;
+    }
   }
 }

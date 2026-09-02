@@ -32,6 +32,19 @@ export interface UnifiedLedgerResponse {
     totalCredits: number;
     totalDebits: number;
     closingBalance: number;
+    breakdown: {
+      creditsBySource: {
+        dva_transfer: number;
+        manual_sale: number;
+        pos: number;
+        invoice_payment: number;
+        other: number;
+      };
+      debitsByType?: {
+        tax_payment: number;
+        refund: number;
+      };
+    };
   };
   data: UnifiedLedgerRow[];
   pagination: {
@@ -214,6 +227,61 @@ export async function getUnifiedLedger(
   // Sort chronologically (oldest to newest for running balance math)
   merged.sort((a, b) => a.sortDate.getTime() - b.sortDate.getTime());
 
+  // ── 3.5. Calculate Category Breakdowns ──────────────────────
+  // Calculate totals by source type BEFORE pagination/search.
+  // This ensures breakdown reflects ALL transactions in the scope, not just the current page.
+  const breakdown = {
+    creditsBySource: {
+      dva_transfer: 0,
+      manual_sale: 0,
+      pos: 0,
+      invoice_payment: 0,
+      other: 0,
+    },
+    ...(scope === 'dva_bank'
+      ? {
+          debitsByType: {
+            tax_payment: 0,
+            refund: 0,
+          },
+        }
+      : {}),
+  };
+
+  for (const entry of merged) {
+    if (entry.item.entryType === 'credit') {
+      const sourceType = entry.item.sourceType;
+
+      // Map sourceType to breakdown category
+      switch (sourceType) {
+        case 'dva_transfer':
+          breakdown.creditsBySource.dva_transfer += entry.item.amount;
+          break;
+        case 'manual_sale':
+          breakdown.creditsBySource.manual_sale += entry.item.amount;
+          break;
+        case 'pos':
+          breakdown.creditsBySource.pos += entry.item.amount;
+          break;
+        case 'invoice_payment':
+          breakdown.creditsBySource.invoice_payment += entry.item.amount;
+          break;
+        default:
+          // Catch any unknown source types (defensive coding)
+          breakdown.creditsBySource.other += entry.item.amount;
+      }
+    } else if (scope === 'dva_bank') {
+      // Debits (only in DVA scope - tax payments and refunds)
+      const sourceType = entry.item.sourceType;
+
+      if (sourceType === 'tax_payment') {
+        breakdown.debitsByType!.tax_payment += entry.item.amount;
+      } else if (sourceType === 'refund') {
+        breakdown.debitsByType!.refund += entry.item.amount;
+      }
+    }
+  }
+
   // ── 4. Calculate Chronological Running Balance & Totals ───────
   let currentBalance = openingBalance;
   let totalCredits = 0;
@@ -271,6 +339,7 @@ export async function getUnifiedLedger(
       totalCredits,
       totalDebits,
       closingBalance,
+      breakdown,
     },
     data: paginatedItems,
     pagination: {

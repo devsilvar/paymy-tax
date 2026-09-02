@@ -117,7 +117,12 @@ export interface InitiateTransferResult {
   amount: number;
 }
 
-// Paystack moved from `type:'bvn'` to `type:'bank_account'` validation —
+export interface VerifyTransferResult {
+  status: 'success' | 'failed' | 'reversed' | 'otp' | 'pending';
+  failureReason?: string;
+}
+
+// ─── Customer Validation Types ───────────────────────────────
 // the new shape requires both the customer's BVN *and* a bank account on
 // their name (account_number + bank_code) so Paystack can cross-check.
 // Names are sourced from `business.ownerName`; bank/account come from a
@@ -180,4 +185,5 @@ export interface PaymentProvider {
   ): Promise<SplitDedicatedAccountResult>;
   createTransferRecipient(params: CreateTransferRecipientParams): Promise<CreateTransferRecipientResult>;
   initiateTransfer(params: InitiateTransferParams): Promise<InitiateTransferResult>;
+  verifyTransfer(reference: string): Promise<VerifyTransferResult>;
 }

@@ -1,5 +1,4 @@
 import prisma from '@/lib/prisma';
-import { Prisma } from '@prisma/client';
 import logger from '@/lib/logger';
 import { config } from '@/config';
 import { AppError } from '@/middleware/errorHandler';
@@ -7,9 +6,22 @@ import { logAudit } from '@/lib/audit';
 import { getPaymentProvider } from '@/lib/payment';
 import { createReminderOnce } from '@/services/reminder.service';
 import { formatNaira } from '@/lib/format';
-import { verifyBusinessOwnership } from '@/lib/ownership';
+import { encryptPii } from '@/lib/encryption';
 
 // ─── Helpers ────────────────────────────────────────────────
+
+async function verifyBusinessOwnership(userId: string, businessId: string) {
+  const business = await prisma.business.findUnique({ where: { id: businessId } });
+
+  if (!business) {
+    throw new AppError(404, 'Business not found', 'BUSINESS_NOT_FOUND');
+  }
+  if (business.userId !== userId) {
+    throw new AppError(403, 'You do not have access to this business', 'FORBIDDEN');
+  }
+
+  return business;
+}
 
 function splitName(fullName: string): { firstName: string; lastName: string } {
   const parts = fullName.trim().split(/\s+/);
@@ -36,7 +48,6 @@ function splitName(fullName: string): { firstName: string; lastName: string } {
 
 export interface ValidateCustomerInput {
   bvn: string;
-  nin?: string;
   bankCode: string;
   accountNumber: string;
 }
@@ -68,14 +79,11 @@ export async function validateCustomer(
     lastName,
   });
 
-  // Store BVN and NIN on User record after successful Paystack validation
+  // Store encrypted BVN on User record after Paystack validation submission
   await prisma.user.update({
     where: { id: userId },
     data: {
-      bvn: input.bvn,
-      nin: input.nin || undefined,
-      bvnVerifiedAt: new Date(),
-      ninVerifiedAt: input.nin ? new Date() : undefined,
+      bvnEncrypted: encryptPii(input.bvn),
     },
   });
 
@@ -98,7 +106,6 @@ export async function validateCustomer(
     newData: {
       bankCode: input.bankCode,
       accountLast4: input.accountNumber.slice(-4),
-      ninProvided: !!input.nin,
     },
   });
 
@@ -309,12 +316,9 @@ export async function getVirtualAccount(userId: string, businessId: string) {
     return {
       status: 'active',
       accountNumber: business.virtualAccountNumber,
-      bankName: business.virtualAccountBank || 'Wema Bank',
-      accountName: business.ownerName,
-      businessName: business.businessName,
+      bankName: business.virtualAccountBank,
     };
   }
-
 
   // Surfaces a `customeridentification.failed` / `dedicatedaccount.assign.failed`
   // webhook that landed since the last check. Without this, the frontend's
@@ -328,6 +332,26 @@ export async function getVirtualAccount(userId: string, businessId: string) {
       message: business.dvaFailureReason,
       failedAt: business.dvaFailedAt,
     };
+  }
+
+  // Identity verification is in-flight — the business has a Paystack customer
+  // record and the user has submitted their BVN (bvnEncrypted is set), but
+  // no virtualAccountNumber or failure reason has arrived yet. Without this
+  // check the endpoint returns 'none' (identical to "never started"), so a
+  // page refresh kills the frontend's verification screen and shows the
+  // "Activate" button again — making the user believe verification failed.
+  if (business.paystackCustomerCode) {
+    const user = await prisma.user.findUnique({
+      where: { id: userId },
+      select: { bvnEncrypted: true, bvnVerifiedAt: true },
+    });
+
+    if (user?.bvnEncrypted || user?.bvnVerifiedAt) {
+      return {
+        status: 'pending',
+        message: 'Your identity is being verified with your bank. This usually takes 1–3 minutes.',
+      };
+    }
   }
 
   return {
@@ -346,7 +370,7 @@ export async function getVirtualAccount(userId: string, businessId: string) {
 // endpoint summarizes OUR OWN records, which is the only "balance" that
 // actually exists for a DVA under split-settlement.
 //
-// Two totals on purpose: `completed` only counts sales a human has verified
+// Two totals on purpose: `confirmed` only counts sales a human has verified
 // (see POST /sales/:id/verify) and is what feeds tax calculations. Every
 // DVA transfer lands in `pendingVerification` first — see the explicit
 // `status: 'pending', needsVerification: true` inside the
@@ -367,7 +391,7 @@ export async function getDVABalance(userId: string, businessId: string) {
     metadata: { path: ['channel'], equals: 'dva' },
   };
 
-  const [completed, pending, lastTransaction] = await Promise.all([
+  const [confirmed, pending, lastTransaction] = await Promise.all([
     prisma.salesTransaction.aggregate({
       where: { ...dvaFilter, status: 'confirmed' },
       _sum: { amount: true },
@@ -388,9 +412,9 @@ export async function getDVABalance(userId: string, businessId: string) {
   return {
     accountNumber: business.virtualAccountNumber,
     accountStatus: business.virtualAccountNumber ? 'active' : 'none',
-    completed: {
-      total: completed._sum.amount ?? 0,
-      count: completed._count,
+    confirmed: {
+      total: confirmed._sum.amount ?? 0,
+      count: confirmed._count,
     },
     pendingVerification: {
       total: pending._sum.amount ?? 0,
@@ -538,6 +562,19 @@ export async function processCustomerIdentificationWebhook(event: any) {
     await prisma.business.update({
       where: { id: business.id },
       data: { dvaFailureReason: null, dvaFailedAt: null },
+    });
+
+    // Stamp bvnVerifiedAt on User now that Paystack confirmed identity
+    const user = await prisma.user.findUnique({
+      where: { id: business.userId },
+      select: { ninEncrypted: true },
+    });
+    await prisma.user.update({
+      where: { id: business.userId },
+      data: {
+        bvnVerifiedAt: new Date(),
+        ...(user?.ninEncrypted ? { ninVerifiedAt: new Date() } : {}),
+      },
     });
 
     // Already has a DVA — nothing to do (a re-validation or replayed webhook).
@@ -697,13 +734,6 @@ export async function processDVATransferWebhook(event: any) {
       ? `${data.customer.first_name} ${data.customer.last_name || ''}`.trim()
       : null);
 
-  const isSplitSettled = Boolean(business.autoSplitEnabled && business.paystackSubaccountCode);
-  const splitPct = isSplitSettled ? business.taxSplitPercentage : null;
-  const platformRetained =
-    isSplitSettled && business.taxSplitPercentage != null
-      ? new Prisma.Decimal(amount).mul(business.taxSplitPercentage).div(100)
-      : null;
-
   const sale = await prisma.salesTransaction.create({
     data: {
       businessId: business.id,
@@ -715,14 +745,10 @@ export async function processDVATransferWebhook(event: any) {
         ? `${data.customer.first_name} ${data.customer.last_name || ''}`.trim()
         : 'Bank Transfer',
       transactionDate: data.paid_at ? new Date(data.paid_at) : new Date(),
-      settledViaSplit: isSplitSettled,
-      splitPct,
-      platformRetained,
       metadata: {
         channel: 'dva',
         paystackTransactionId: data.id,
         autoRecorded: true,
-        splitSettled: isSplitSettled,
       },
       needsVerification: true,
       customerHint,
@@ -827,32 +853,7 @@ export async function requeryDVA(userId: string, businessId: string) {
   };
 }
 
-
-
-// ─── Settlement Bank Connection (Subaccount Split-Settlement) ────────────────
-
-export async function resolveSettlementAccount(
-  userId: string,
-  businessId: string,
-  bankCode: string,
-  accountNumber: string,
-) {
-  await verifyBusinessOwnership(userId, businessId);
-  const provider = getPaymentProvider();
-
-  logger.info('Resolving settlement account', { bankCode, accountNumber });
-  const result = await provider.resolveAccount(accountNumber, bankCode);
-
-  return {
-    bankCode: result.bankCode,
-    accountNumber: result.accountNumber,
-    accountName: result.accountName,
-  };
-}
-
 // ─── DVA Transactions Listing ────────────────────────────────────────────────
-// Settlement bank connection removed — consolidated into settlement.service.ts
-// DVA routes now call settlementService.connectSettlementBank directly
 
 export async function getDVATransactions(
   userId: string,
@@ -913,4 +914,96 @@ export async function getDVATransactions(
       hasPrev: page > 1,
     },
   };
-}
+}
+
+
+
+// ─── Settlement Bank Connection (Subaccount Split-Settlement) ────────────────
+
+export async function resolveSettlementAccount(
+  userId: string,
+  businessId: string,
+  bankCode: string,
+  accountNumber: string,
+) {
+  await verifyBusinessOwnership(userId, businessId);
+  const provider = getPaymentProvider();
+
+  logger.info('Resolving settlement account', { bankCode, accountNumber });
+  const result = await provider.resolveAccount(accountNumber, bankCode);
+
+  return {
+    bankCode: result.bankCode,
+    accountNumber: result.accountNumber,
+    accountName: result.accountName,
+  };
+}
+
+export async function connectSettlementBank(
+  userId: string,
+  businessId: string,
+  params: { bankCode: string; bankName: string; accountNumber: string; commissionPct?: number },
+) {
+  const business = await verifyBusinessOwnership(userId, businessId);
+  const provider = getPaymentProvider();
+
+  // Re-resolve server-side (never trust client-supplied name)
+  const { accountName } = await provider.resolveAccount(params.accountNumber, params.bankCode);
+
+  const { subaccountCode } = await provider.createSubaccount({
+    businessName: business.businessName,
+    bankCode: params.bankCode,
+    accountNumber: params.accountNumber,
+    percentageCharge: params.commissionPct ?? 0,
+  });
+
+  await prisma.business.update({
+    where: { id: businessId },
+    data: {
+      paystackSubaccountCode: subaccountCode,
+      settlementBankCode: params.bankCode,
+      settlementBankName: params.bankName,
+      settlementAccountNumber: params.accountNumber,
+      settlementAccountName: accountName,
+      platformCommissionPct: params.commissionPct ?? 0,
+      settlementConnectedAt: new Date(),
+    },
+  });
+
+  // Retrofit: if a DVA already exists, it was created WITHOUT this subaccount,
+  // so inbound money is still pooling in the platform balance instead of
+  // settling to the SME's bank. Attach the split now so it starts settling.
+  // New DVAs (set up after this point) are born attached via setupVirtualAccount.
+  //
+  // Wrapped so a split-attach failure never loses the already-saved subaccount —
+  // the SME can retry attach via re-connecting, or a new DVA setup will attach
+  // it natively. `splitAttached` lets the caller surface a soft warning.
+  let splitAttached = false;
+  if (business.virtualAccountNumber && business.paystackCustomerCode) {
+    try {
+      await provider.splitDedicatedAccount(business.paystackCustomerCode, subaccountCode);
+      splitAttached = true;
+      logger.info('Subaccount split attached to existing DVA', {
+        businessId,
+        subaccountCode,
+      });
+    } catch (err) {
+      logger.error('Failed to attach subaccount split to existing DVA', {
+        businessId,
+        subaccountCode,
+        err: err instanceof Error ? err.message : err,
+      });
+    }
+  }
+
+  logAudit({
+    userId,
+    businessId,
+    action: 'settlement.connected',
+    resourceType: 'business',
+    resourceId: businessId,
+    newData: { subaccountCode, bankCode: params.bankCode, accountLast4: params.accountNumber.slice(-4), splitAttached },
+  });
+
+  return { subaccountCode, accountName, bankName: params.bankName, splitAttached };
+}

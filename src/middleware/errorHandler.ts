@@ -103,6 +103,14 @@ export const errorHandler = (
     statusCode = 400;
 
     switch (err.code) {
+      case 'P1001':
+      case 'P1002':
+      case 'P1008':
+      case 'P1017':
+        errorCode = 'SERVICE_UNAVAILABLE';
+        message = 'Unable to reach the database server. Please check your network connection and try again.';
+        statusCode = 503;
+        break;
       case 'P2002':
         errorCode = 'DUPLICATE_ENTRY';
         message = 'A record with this value already exists';
@@ -119,8 +127,12 @@ export const errorHandler = (
         break;
       default:
         errorCode = 'DATABASE_ERROR';
-        message = 'Database operation failed';
+        message = 'A temporary database error occurred. Please try again.';
     }
+  } else if (err instanceof Prisma.PrismaClientInitializationError) {
+    statusCode = 503;
+    errorCode = 'SERVICE_UNAVAILABLE';
+    message = 'Unable to connect to the database. Please check your network connection and try again.';
   }
 
   // Build error response

@@ -9,6 +9,7 @@ import {
   forgotPasswordSchema,
   resetPasswordSchema,
   updateMeSchema,
+  revealBvnSchema,
 } from '@/validators/auth.validator';
 import * as authService from '@/services/auth.service';
 
@@ -101,5 +102,21 @@ export const resetPassword = asyncHandler(async (req: Request, res: Response) =>
     success: true,
     data: result,
     message: result.message,
+  });
+});
+
+export const revealBvn = asyncHandler(async (req: AuthenticatedRequest, res: Response) => {
+  const input = revealBvnSchema.parse(req.body);
+  const bvn = await authService.revealBvn(
+    req.user!.userId,
+    input,
+    req.ip,
+    req.get('user-agent')
+  );
+
+  res.status(200).json({
+    success: true,
+    data: { bvn },
+    message: 'BVN retrieved successfully',
   });
 });

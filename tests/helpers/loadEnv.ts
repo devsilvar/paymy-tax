@@ -13,3 +13,8 @@ if (paystackKey.startsWith('sk_live_')) {
       'Set PAYSTACK_SECRET_KEY to an sk_test_… key (or unset it) and re-run.'
   );
 }
+
+// Ensure PII_ENCRYPTION_KEY is populated for unit/e2e testing
+if (!process.env.PII_ENCRYPTION_KEY) {
+  process.env.PII_ENCRYPTION_KEY = '8GFPuob6LZNXFzzMZq5erNoVAAoQ7QiBV61CxBHrGUI=';
+}

@@ -3,6 +3,7 @@ import 'dotenv/config'; // Load .env before any test so signature calc matches s
 import request from 'supertest';
 import { createApp } from './../../src/app';
 import prisma from '../../src/lib/prisma';
+import { encryptPii } from '../../src/lib/encryption';
 import type { Application } from 'express';
 
 let app: Application;
@@ -1439,6 +1440,65 @@ describe('PayMyTax E2E', () => {
       expect(res.body.data.length).toBeGreaterThan(0);
       expect(res.body.data[0].description).toContain('Chukwuma');
     });
+
+    it('GET /businesses/:id/ledger → 200 + includes breakdown by source type', async () => {
+      const res = await request(app)
+        .get(`/api/v1/businesses/${businessId}/ledger?scope=all_income`)
+        .set(auth());
+
+      expect(res.status).toBe(200);
+      expect(res.body.summary.breakdown).toBeDefined();
+      expect(res.body.summary.breakdown.creditsBySource).toBeDefined();
+      expect(res.body.summary.breakdown.creditsBySource).toHaveProperty('dva_transfer');
+      expect(res.body.summary.breakdown.creditsBySource).toHaveProperty('manual_sale');
+      expect(res.body.summary.breakdown.creditsBySource).toHaveProperty('pos');
+      expect(res.body.summary.breakdown.creditsBySource).toHaveProperty('invoice_payment');
+      expect(res.body.summary.breakdown.creditsBySource).toHaveProperty('other');
+
+      // Verify breakdown sum equals totalCredits
+      const breakdownTotal =
+        res.body.summary.breakdown.creditsBySource.dva_transfer +
+        res.body.summary.breakdown.creditsBySource.manual_sale +
+        res.body.summary.breakdown.creditsBySource.pos +
+        res.body.summary.breakdown.creditsBySource.invoice_payment +
+        res.body.summary.breakdown.creditsBySource.other;
+
+      expect(breakdownTotal).toBe(res.body.summary.totalCredits);
+    });
+
+    it('GET /businesses/:id/ledger (dva_bank scope) → 200 + includes debitsByType', async () => {
+      const res = await request(app)
+        .get(`/api/v1/businesses/${businessId}/ledger?scope=dva_bank`)
+        .set(auth());
+
+      expect(res.status).toBe(200);
+      expect(res.body.summary.breakdown).toBeDefined();
+      expect(res.body.summary.breakdown.debitsByType).toBeDefined();
+      expect(res.body.summary.breakdown.debitsByType).toHaveProperty('tax_payment');
+      expect(res.body.summary.breakdown.debitsByType).toHaveProperty('refund');
+    });
+
+    it('GET /businesses/:id/ledger with search → breakdown unaffected by search filter', async () => {
+      // Get full breakdown
+      const res1 = await request(app)
+        .get(`/api/v1/businesses/${businessId}/ledger?scope=all_income`)
+        .set(auth());
+
+      // Get with search filter
+      const res2 = await request(app)
+        .get(`/api/v1/businesses/${businessId}/ledger?scope=all_income&search=Chukwuma`)
+        .set(auth());
+
+      expect(res1.status).toBe(200);
+      expect(res2.status).toBe(200);
+
+      // Breakdown should be identical (search doesn't affect totals)
+      expect(res2.body.summary.breakdown.creditsBySource).toEqual(res1.body.summary.breakdown.creditsBySource);
+      expect(res2.body.summary.totalCredits).toBe(res1.body.summary.totalCredits);
+
+      // But pagination should differ
+      expect(res2.body.data.length).toBeLessThanOrEqual(res1.body.data.length);
+    });
   });
 
   // ═══════════════════════════════════════
@@ -1981,6 +2041,124 @@ describe('PayMyTax E2E', () => {
       expect(previewRes.body.data.totalWithdrawn).toBeGreaterThan(0);
     });
 
+    it('NEW-C: Recipient code reuse on subsequent payout approvals', async () => {
+      // Check business recipient code after first approval
+      const bizAfterFirst = await prisma.business.findUnique({
+        where: { id: testWithdrawalBusinessId },
+        select: { paystackRecipientCode: true, recipientFingerprint: true },
+      });
+
+      if (bizAfterFirst?.paystackRecipientCode) {
+        expect(bizAfterFirst.recipientFingerprint).toBe('058:0123456789');
+
+        // Create second withdrawal request
+        const req2Res = await request(app)
+          .post(`/api/v1/businesses/${testWithdrawalBusinessId}/settlement/withdraw`)
+          .set(auth())
+          .send({
+            amount: 2000,
+            pin: '7391',
+            narration: 'Second withdrawal for recipient reuse test',
+          });
+
+        if (req2Res.status === 200) {
+          const req2Id = req2Res.body.data.id;
+          const approve2Res = await request(app)
+            .post(`/api/v1/admin/settlement/withdrawals/${req2Id}/approve`)
+            .set(adminAuth());
+
+          if (approve2Res.status === 200) {
+            const auditLog = await prisma.auditLog.findFirst({
+              where: {
+                resourceId: req2Id,
+                action: 'settlement.payout_approved',
+              },
+              orderBy: { createdAt: 'desc' },
+            });
+            expect((auditLog?.newData as any)?.recipientReused).toBe(true);
+
+            const bizAfterSecond = await prisma.business.findUnique({
+              where: { id: testWithdrawalBusinessId },
+              select: { paystackRecipientCode: true },
+            });
+            expect(bizAfterSecond?.paystackRecipientCode).toBe(bizAfterFirst.paystackRecipientCode);
+          }
+        }
+      }
+    });
+
+    it('NEW-H: Admin requery on pending withdrawal returns 409 PAYOUT_NOT_PROCESSABLE', async () => {
+      // Create a pending request
+      const reqRes = await request(app)
+        .post(`/api/v1/businesses/${testWithdrawalBusinessId}/settlement/withdraw`)
+        .set(auth())
+        .send({
+          amount: 1500,
+          pin: '7391',
+          narration: 'Requery pending test',
+        });
+
+      if (reqRes.status === 200) {
+        const reqId = reqRes.body.data.id;
+        const requeryRes = await request(app)
+          .post(`/api/v1/admin/settlement/withdrawals/${reqId}/requery`)
+          .set(adminAuth());
+
+        expect(requeryRes.status).toBe(409);
+        expect(requeryRes.body.error.code).toBe('PAYOUT_NOT_PROCESSABLE');
+      }
+    });
+
+    it('NEW-H: applyTransferOutcome guard semantics', async () => {
+      const { applyTransferOutcome } = await import('../../src/services/settlement.service');
+
+      // Create a test payout row
+      const testPayout = await prisma.settlementPayout.create({
+        data: {
+          businessId: testWithdrawalBusinessId,
+          amount: 1000,
+          netAmount: 1000,
+          destinationBankCode: '058',
+          destinationBankName: 'Guaranty Trust Bank',
+          destinationAccountNum: '0123456789',
+          destinationAccountName: 'Test Account',
+          transferReference: `PO-TEST-GUARD-${Date.now()}`,
+          status: 'failed',
+          failureReason: 'Initial failure',
+        },
+      });
+
+      // Guard A: failed -> completed (preserves self-heal)
+      const resA = await applyTransferOutcome(testPayout.id, 'success');
+      expect(resA.applied).toBe(true);
+
+      const afterA = await prisma.settlementPayout.findUnique({ where: { id: testPayout.id } });
+      expect(afterA?.status).toBe('completed');
+
+      // Guard B: completed -> failed (must NO-OP)
+      const resB = await applyTransferOutcome(testPayout.id, 'failed', 'Late failure');
+      expect(resB.applied).toBe(false);
+
+      const afterB = await prisma.settlementPayout.findUnique({ where: { id: testPayout.id } });
+      expect(afterB?.status).toBe('completed');
+
+      // Guard C: double apply success (must NO-OP on status)
+      const resC = await applyTransferOutcome(testPayout.id, 'success');
+      expect(resC.applied).toBe(false);
+    });
+
+    it('SLA-1: Admin dashboard returns withdrawal SLA metrics', async () => {
+      const res = await request(app)
+        .get('/api/v1/admin/dashboard')
+        .set(adminAuth());
+
+      expect(res.status).toBe(200);
+      expect(res.body.data).toHaveProperty('withdrawalSla');
+      expect(typeof res.body.data.withdrawalSla.pendingCount).toBe('number');
+      expect(typeof res.body.data.withdrawalSla.breachedCount).toBe('number');
+      expect(typeof res.body.data.withdrawalSla.oldestPendingHours).toBe('number');
+    });
+
     afterAll(async () => {
       // Cleanup
       await request(app).delete(`/api/v1/businesses/${testWithdrawalBusinessId}`).set(auth());
@@ -1995,6 +2173,18 @@ describe('PayMyTax E2E', () => {
     let testPaymentId = '';
 
     beforeAll(async () => {
+      // Create a sale in August 2026 so tax report has non-zero sales to finalize
+      await request(app)
+        .post(`/api/v1/businesses/${businessId}/sales`)
+        .set(auth())
+        .send({
+          amount: 50000,
+          paymentMethod: 'cash',
+          source: 'manual',
+          transactionDate: '2026-08-10T10:00:00.000Z',
+          description: 'Sale for Phase 6 test',
+        });
+
       // Create a finalized report for testing
       const calcRes = await request(app)
         .post(`/api/v1/businesses/${businessId}/tax/calculate`)
@@ -2218,6 +2408,129 @@ describe('PayMyTax E2E', () => {
       await request(app)
         .delete(`/api/v1/businesses/${testBusinessId}`)
         .set(auth());
+    });
+  });
+
+  // ═══════════════════════════════════════
+  // NOTICEPAY4: PII ENCRYPTION & PIN STEP-UP
+  // ═══════════════════════════════════════
+  describe('Noticepay4: PII Encryption & PIN Step-Up Token', () => {
+    let stepUpToken: string;
+
+    it('PIN verify issues a 5-minute step-up token on valid PIN', async () => {
+      const res = await request(app)
+        .post('/api/v1/auth/pin/verify')
+        .set(auth())
+        .send({ pin: '7391' });
+
+      expect(res.status).toBe(200);
+      expect(res.body.data.valid).toBe(true);
+      expect(typeof res.body.data.stepUpToken).toBe('string');
+      expect(res.body.data.stepUpToken.length).toBeGreaterThan(20);
+      stepUpToken = res.body.data.stepUpToken;
+    });
+
+    it('GET /auth/me sanitizes user and does not leak PII or hashes', async () => {
+      const res = await request(app)
+        .get('/api/v1/auth/me')
+        .set(auth());
+
+      expect(res.status).toBe(200);
+      expect(res.body.data).not.toHaveProperty('passwordHash');
+      expect(res.body.data).not.toHaveProperty('transactionPin');
+      expect(res.body.data).not.toHaveProperty('resetTokenHash');
+      expect(res.body.data).not.toHaveProperty('bvnEncrypted');
+      expect(res.body.data).not.toHaveProperty('ninEncrypted');
+      expect(res.body.data).not.toHaveProperty('bvn');
+      expect(res.body.data).not.toHaveProperty('nin');
+    });
+
+    it('Allows toggleAutoSplit using stepUpToken instead of raw PIN', async () => {
+      const res = await request(app)
+        .patch(`/api/v1/businesses/${testWithdrawalBusinessId}/settlement/auto-split`)
+        .set(auth())
+        .send({
+          enabled: false,
+          stepUpToken,
+        });
+
+      expect(res.status).toBe(200);
+      expect(res.body.data.enabled).toBe(false);
+    });
+
+    it('Rejects invalid / tampered stepUpToken with 401', async () => {
+      const res = await request(app)
+        .patch(`/api/v1/businesses/${testWithdrawalBusinessId}/settlement/auto-split`)
+        .set(auth())
+        .send({
+          enabled: false,
+          stepUpToken: 'tampered.invalid.token.string',
+        });
+
+      expect(res.status).toBe(401);
+      expect(res.body.error.code).toBe('INVALID_STEP_UP_TOKEN');
+    });
+
+    it('Rejects request when neither PIN nor stepUpToken is provided', async () => {
+      const res = await request(app)
+        .patch(`/api/v1/businesses/${testWithdrawalBusinessId}/settlement/auto-split`)
+        .set(auth())
+        .send({
+          enabled: true,
+        });
+
+      expect(res.status).toBe(400);
+      expect(res.body.error.code).toBe('MISSING_PIN_CREDENTIAL');
+    });
+
+    it('POST /auth/reveal-bvn reveals decrypted BVN using stepUpToken', async () => {
+      // Setup test user encrypted BVN in database
+      const testBvn = '22345678901';
+      await prisma.user.update({
+        where: { id: userId },
+        data: {
+          bvnEncrypted: encryptPii(testBvn),
+          bvnVerifiedAt: new Date(),
+        },
+      });
+
+      const res = await request(app)
+        .post('/api/v1/auth/reveal-bvn')
+        .set(auth())
+        .send({ stepUpToken });
+
+      expect(res.status).toBe(200);
+      expect(res.body.data.bvn).toBe(testBvn);
+    });
+
+    it('POST /auth/reveal-bvn reveals decrypted BVN using raw PIN', async () => {
+      const res = await request(app)
+        .post('/api/v1/auth/reveal-bvn')
+        .set(auth())
+        .send({ pin: '7391' });
+
+      expect(res.status).toBe(200);
+      expect(res.body.data.bvn).toBe('22345678901');
+    });
+
+    it('POST /auth/reveal-bvn rejects invalid PIN with 401', async () => {
+      const res = await request(app)
+        .post('/api/v1/auth/reveal-bvn')
+        .set(auth())
+        .send({ pin: '0000' });
+
+      expect(res.status).toBe(401);
+      expect(res.body.error.code).toBe('INVALID_PIN');
+    });
+
+    it('POST /auth/reveal-bvn rejects request without credentials with 400', async () => {
+      const res = await request(app)
+        .post('/api/v1/auth/reveal-bvn')
+        .set(auth())
+        .send({});
+
+      expect(res.status).toBe(400);
+      expect(res.body.error.code).toBe('MISSING_PIN_CREDENTIAL');
     });
   });
 

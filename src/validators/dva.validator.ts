@@ -30,11 +30,6 @@ export const validateCustomerSchema = z.object({
     .string()
     .trim()
     .regex(/^\d{11,12}$/, 'BVN must be 11 or 12 digits'),
-  nin: z
-    .string()
-    .trim()
-    .regex(/^\d{11}$/, 'NIN must be exactly 11 digits')
-    .optional(),
   bankCode: z
     .string()
     .trim()
@@ -69,9 +64,10 @@ export const resolveSettlementSchema = z.object({
 
 export const connectSettlementSchema = resolveSettlementSchema.extend({
   bankName: z.string().trim().min(1, 'Bank name is required'),
-  pin: z
-    .string()
-    .regex(/^\d{4}$/, 'Transaction PIN must be exactly 4 digits')
+  commissionPct: z
+    .number()
+    .min(0, 'Commission cannot be negative')
+    .max(100, 'Commission cannot exceed 100%')
     .optional(),
 });
 

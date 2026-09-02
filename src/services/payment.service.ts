@@ -11,6 +11,7 @@ import {
   processDVATransferWebhook,
   processCustomerIdentificationWebhook,
 } from '@/services/dva.service';
+import { applyTransferOutcome } from '@/services/settlement.service';
 import { createReminderOnce } from '@/services/reminder.service';
 import { formatNaira, formatTaxMonth } from '@/lib/format';
 
@@ -558,110 +559,49 @@ export async function processWebhook(signature: string, rawBody: string) {
 
   // ─── Settlement Payout Transfer Webhooks ───────────────────
   if (event.event === 'transfer.success') {
-      const transferData = event.data || {};
-      const ref = transferData.reference;
-      const transferCode = transferData.transfer_code;
+    const transferData = event.data || {};
+    const ref = transferData.reference;
+    const transferCode = transferData.transfer_code;
 
-      const payout = await prisma.settlementPayout.findFirst({
-        where: {
-          OR: [
-            ...(ref ? [{ transferReference: ref }] : []),
-            ...(transferCode ? [{ paystackTransferCode: transferCode }] : []),
-          ],
-        },
+    const payout = await prisma.settlementPayout.findFirst({
+      where: {
+        OR: [
+          ...(ref ? [{ transferReference: ref }] : []),
+          ...(transferCode ? [{ paystackTransferCode: transferCode }] : []),
+        ],
+      },
+    });
+
+    if (payout) {
+      await applyTransferOutcome(payout.id, 'success', undefined, {
+        reference: ref,
+        transferCode,
       });
-
-      if (payout) {
-        await prisma.settlementPayout.update({
-          where: { id: payout.id },
-          data: {
-            status: 'completed',
-            completedAt: new Date(),
-          },
-        });
-
-        logAudit({
-          businessId: payout.businessId,
-          action: 'settlement.payout_completed',
-          resourceType: 'settlement_payout',
-          resourceId: payout.id,
-          newData: { reference: ref, transferCode },
-        });
-
-        logger.info('Settlement payout marked completed via webhook', {
-          payoutId: payout.id,
-          reference: ref,
-        });
-
-        void createReminderOnce({
-          businessId: payout.businessId,
-          reminderType: 'payout_completed',
-          scheduledDate: new Date(),
-          message: `Your withdrawal of ${formatNaira(Number(payout.amount))} (ref ${ref || payout.transferReference}) was successfully transferred to your ${payout.destinationBankName} account.`,
-          referenceType: 'settlement_payout',
-          referenceId: payout.id,
-        }).catch((err) =>
-          logger.warn('Failed to create payout_completed reminder', {
-            payoutId: payout.id,
-            err: err instanceof Error ? err.message : err,
-          })
-        );
-      }
     }
+  }
 
-    if (event.event === 'transfer.failed' || event.event === 'transfer.reversed') {
-      const transferData = event.data || {};
-      const ref = transferData.reference;
-      const transferCode = transferData.transfer_code;
-      const reason = transferData.reason || event.event;
+  if (event.event === 'transfer.failed' || event.event === 'transfer.reversed') {
+    const transferData = event.data || {};
+    const ref = transferData.reference;
+    const transferCode = transferData.transfer_code;
+    const reason = transferData.reason || event.event;
 
-      const payout = await prisma.settlementPayout.findFirst({
-        where: {
-          OR: [
-            ...(ref ? [{ transferReference: ref }] : []),
-            ...(transferCode ? [{ paystackTransferCode: transferCode }] : []),
-          ],
-        },
+    const payout = await prisma.settlementPayout.findFirst({
+      where: {
+        OR: [
+          ...(ref ? [{ transferReference: ref }] : []),
+          ...(transferCode ? [{ paystackTransferCode: transferCode }] : []),
+        ],
+      },
+    });
+
+    if (payout) {
+      await applyTransferOutcome(payout.id, 'failed', reason, {
+        reference: ref,
+        transferCode,
       });
-
-      if (payout) {
-        await prisma.settlementPayout.update({
-          where: { id: payout.id },
-          data: {
-            status: 'failed',
-            failureReason: reason,
-          },
-        });
-
-        logAudit({
-          businessId: payout.businessId,
-          action: 'settlement.payout_failed',
-          resourceType: 'settlement_payout',
-          resourceId: payout.id,
-          newData: { reference: ref, transferCode, reason },
-        });
-
-        logger.info('Settlement payout marked failed via webhook', {
-          payoutId: payout.id,
-          reference: ref,
-          reason,
-        });
-
-        void createReminderOnce({
-          businessId: payout.businessId,
-          reminderType: 'payout_failed',
-          scheduledDate: new Date(),
-          message: `Your withdrawal transfer of ${formatNaira(Number(payout.amount))} (ref ${ref || payout.transferReference}) failed: ${reason || 'Bank transfer could not be completed'}. The funds remain available in your balance.`,
-          referenceType: 'settlement_payout',
-          referenceId: payout.id,
-        }).catch((err) =>
-          logger.warn('Failed to create payout_failed reminder', {
-            payoutId: payout.id,
-            err: err instanceof Error ? err.message : err,
-          })
-        );
-      }
     }
+  }
 
     // Mark webhook as processed
     await prisma.paystackWebhookEvent.update({

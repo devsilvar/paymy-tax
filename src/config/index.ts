@@ -205,6 +205,7 @@ export const config = {
     minTaxSplitPct: Number(process.env.SETTLEMENT_MIN_TAX_SPLIT_PCT ?? 7.5),
     maxTaxSplitPct: Number(process.env.SETTLEMENT_MAX_TAX_SPLIT_PCT ?? 50),
     platformCommissionPct: Number(process.env.PLATFORM_COMMISSION_PCT ?? 0),
+    payoutStaleHours: Number(process.env.PAYOUT_STALE_HOURS ?? 24),
   },
 
   // Scheduled Jobs (node-cron)
@@ -214,6 +215,11 @@ export const config = {
     enabled:
       process.env.ENABLE_CRON === 'true' ||
       process.env.NODE_ENV === 'production',
+  },
+
+  // PII Encryption at Rest (AES-256-GCM)
+  pii: {
+    encryptionKey: process.env.PII_ENCRYPTION_KEY,
   },
 } as const;
 
