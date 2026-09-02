@@ -20,5 +20,5 @@ ALTER TABLE "users" ADD CONSTRAINT "check_bvn_length"
 -- ever returned "active" or "none" — never "failed" — so the Account page
 -- spinner had no way to know a failure had actually already happened, and
 -- just spun until an arbitrary 5-minute client-side timeout.
-ALTER TABLE "businesses" ADD COLUMN "dva_failure_reason" TEXT;
-ALTER TABLE "businesses" ADD COLUMN "dva_failed_at" TIMESTAMP;
+ALTER TABLE "businesses" ADD COLUMN IF NOT EXISTS "dva_failure_reason" TEXT;
+ALTER TABLE "businesses" ADD COLUMN IF NOT EXISTS "dva_failed_at" TIMESTAMP;
