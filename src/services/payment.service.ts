@@ -597,7 +597,9 @@ export async function processWebhook(signature: string, rawBody: string) {
           businessId: payout.businessId,
           reminderType: 'payout_completed',
           scheduledDate: new Date(),
-          message: `Your withdrawal of ${formatNaira(Number(payout.amount))} (ref ${ref || payout.transferReference}) was successfully transferred to your ${payout.destinationBankName} account.`,
+          message: `Your withdrawal of ${formatNaira(
+            Number(payout.netAmount) > 0 ? Number(payout.netAmount) : Number(payout.amount)
+          )} (ref ${ref || payout.transferReference}) was successfully transferred to your ${payout.destinationBankName} account.`,
           referenceType: 'settlement_payout',
           referenceId: payout.id,
         }).catch((err) =>

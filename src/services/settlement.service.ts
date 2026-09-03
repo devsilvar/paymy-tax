@@ -494,11 +494,14 @@ export async function withdrawBalance(
 
     // Fence 3: Duplicate guard (same amount awaiting approval/transfer within 30 min)
     // → almost certainly a double-tap mistake
+    // Match on quote.amount, NOT params.amount: the row below stores quote.amount,
+    // and in 'platform' bearer mode the two differ by the fee — querying the
+    // requested figure would silently disable double-tap protection.
     const DUPLICATE_WINDOW_MS = 30 * 60 * 1000;
     const dup = await tx.settlementPayout.findFirst({
       where: {
         businessId,
-        amount: params.amount,
+        amount: quote.amount,
         status: { in: ['pending', 'processing'] },
         createdAt: { gte: new Date(Date.now() - DUPLICATE_WINDOW_MS) },
       },
@@ -787,7 +790,12 @@ export async function adminListWithdrawalRequests(query: {
       businessName: p.business.businessName,
       merchantId: p.business.merchantId,
       userEmail: p.business.user.email,
+      // amount = what left the platform balance, netAmount = what the SME's bank
+      // account got. An admin approving from this list needs both, or they will
+      // read the gross figure as the payout.
       amount: toNumber(p.amount),
+      fee: toNumber(p.fee),
+      netAmount: toNumber(p.netAmount),
       destinationBankName: p.destinationBankName,
       destinationAccountNum: `•••• ${p.destinationAccountNum.slice(-4)}`, // Masked
       destinationAccountName: p.destinationAccountName,
