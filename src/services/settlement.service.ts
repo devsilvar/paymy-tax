@@ -7,6 +7,12 @@ import logger from '@/lib/logger';
 import * as pinService from '@/services/pin.service';
 import { createReminderOnce } from '@/services/reminder.service';
 import { formatNaira } from '@/lib/format';
+import {
+  dvaFeeCapThreshold,
+  dvaFeeTotalFromBuckets,
+  feeSchedule,
+  quoteWithdrawal,
+} from '@/lib/paystack-fees';
 import config from '@/config';
 import crypto from 'crypto';
 import {
@@ -117,6 +123,47 @@ export async function getPayoutPreview(
   const totalInflowsAll = toNumber(allAgg._sum.amount ?? 0);
   const platformHeldFunds = totalPlainInflows + totalPlatformRetained;
 
+  // 1b. Processing fees Paystack has ALREADY taken on those inflows.
+  // Paystack deducts its DVA charge (1% per transfer, capped at ₦300) before it
+  // settles, so the balance we can really transfer out is gross inflows MINUS
+  // those fees. Leaving them out makes `availableForWithdrawal` a promise
+  // Paystack's balance cannot keep — the transfer dies at the last step.
+  // fee(n) = min(n * pct/100, cap), so the exact total over many rows is
+  //   pct/100 * Σ(below-threshold amounts) + cap * count(above-threshold rows).
+  let estimatedProcessingFees = 0;
+  const capThreshold = dvaFeeCapThreshold();
+  if (Number.isFinite(capThreshold)) {
+    const dvaBase: Prisma.SalesTransactionWhereInput = {
+      businessId,
+      source: 'bank_transfer',
+      status: { in: ['confirmed', 'completed'] },
+      metadata: { path: ['channel'], equals: 'dva' },
+    };
+
+    // Plain inflows pool 100% on the platform, so the platform bears the full fee.
+    const plainBelow = await db.salesTransaction.aggregate({
+      where: { ...dvaBase, settledViaSplit: false, amount: { lte: capThreshold } },
+      _sum: { amount: true },
+    });
+    const plainAbove = await db.salesTransaction.count({
+      where: { ...dvaBase, settledViaSplit: false, amount: { gt: capThreshold } },
+    });
+
+    // Split-settled inflows: the SME's subaccount already took its share, so the
+    // platform only bears the fee on the slice it retained.
+    const splitBelow = await db.salesTransaction.aggregate({
+      where: { ...dvaBase, settledViaSplit: true, platformRetained: { lte: capThreshold } },
+      _sum: { platformRetained: true },
+    });
+    const splitAbove = await db.salesTransaction.count({
+      where: { ...dvaBase, settledViaSplit: true, platformRetained: { gt: capThreshold } },
+    });
+
+    estimatedProcessingFees =
+      dvaFeeTotalFromBuckets(toNumber(plainBelow._sum.amount ?? 0), plainAbove) +
+      dvaFeeTotalFromBuckets(toNumber(splitBelow._sum.platformRetained ?? 0), splitAbove);
+  }
+
   // 2. Total completed / pending / processing withdrawals
   // processing = transfer initiated (admin-approved), pending = awaiting admin approval
   const payoutsWhere: any = {
@@ -161,9 +208,15 @@ export async function getPayoutPreview(
     estimatedTaxLiability = Math.round(grossProfit * 0.075 * 100) / 100;
   }
 
-  // 4. Safe available balance (cannot withdraw funds reserved for unpaid FIRS taxes)
+  // 4. Safe available balance — cannot withdraw funds reserved for unpaid FIRS
+  //    taxes, and cannot promise naira Paystack already kept as processing fees.
   const taxReserve = Math.max(0, estimatedTaxLiability);
-  const availableForWithdrawal = Math.max(0, Math.round((platformHeldFunds - totalWithdrawn - taxReserve) * 100) / 100);
+  const availableForWithdrawal = Math.max(
+    0,
+    Math.round(
+      (platformHeldFunds - estimatedProcessingFees - totalWithdrawn - taxReserve) * 100
+    ) / 100
+  );
 
   const isPinLocked = Boolean(
     business.user.pinLockedUntil && business.user.pinLockedUntil > new Date()
@@ -179,8 +232,13 @@ export async function getPayoutPreview(
     totalInflows: totalInflowsAll,
     totalSplitSettled: Math.max(0, Math.round((totalInflowsAll - platformHeldFunds) * 100) / 100),
     totalWithdrawn,
+    // What Paystack has already deducted from these inflows (1% capped at ₦300
+    // per DVA transfer). Already subtracted from availableForWithdrawal.
+    estimatedProcessingFees,
     taxReserve,
     availableForWithdrawal,
+    // Published Paystack schedule, so the client never hardcodes a naira figure.
+    fees: feeSchedule(),
     settlementAccount: {
       isConnected: Boolean(business.settlementAccountNumber && business.settlementBankCode),
       bankName: business.settlementBankName,
@@ -381,6 +439,21 @@ export async function withdrawBalance(
   const dateStr = now.toISOString().slice(0, 10).replace(/-/g, '');
   const transferReference = `PO-${dateStr}-${crypto.randomBytes(5).toString('hex').toUpperCase()}`;
 
+  // 3b. Price the withdrawal against Paystack's published schedule BEFORE the
+  // ledger is touched — the fee decides both what we reserve and what we send.
+  // Paystack debits `amount + fee` from the balance, so reserving only the
+  // requested amount would leave the platform short on every single payout.
+  let quote: ReturnType<typeof quoteWithdrawal>;
+  try {
+    quote = quoteWithdrawal(params.amount);
+  } catch {
+    throw new AppError(
+      400,
+      'That amount is too small — Paystack’s transfer fee would consume all of it. Please withdraw a larger amount.',
+      'AMOUNT_BELOW_TRANSFER_FEE'
+    );
+  }
+
   // 4. Atomic request creation with triple-fence protection
   const payout = await prisma.$transaction(async (tx) => {
     // Fence 1: Advisory lock (transaction-scoped, serializes per business)
@@ -397,7 +470,7 @@ export async function withdrawBalance(
 
     // Fence 2: Balance check (tx-aware, honest ledger)
     const preview = await getPayoutPreview(userId, businessId, tx);
-    if (params.amount > preview.availableForWithdrawal) {
+    if (quote.amount > preview.availableForWithdrawal) {
       throw new AppError(
         400,
         `Insufficient available funds. Maximum withdrawable balance is ₦${preview.availableForWithdrawal.toLocaleString(
@@ -410,6 +483,10 @@ export async function withdrawBalance(
         {
           available: preview.availableForWithdrawal,
           requested: params.amount,
+          // merchant mode: the ledger debit equals what was asked for.
+          // platform mode: the ledger debit is the amount PLUS Paystack's fee.
+          required: quote.amount,
+          withdrawalFee: quote.fee,
           taxReserve: preview.taxReserve,
         }
       );
@@ -438,12 +515,15 @@ export async function withdrawBalance(
 
     // Ledger-first: the pending row IS the reservation (awaiting admin approval)
     // No Paystack call — transfer happens on admin approval (adminApproveWithdrawal)
+    // amount   = what leaves the platform-held balance
+    // fee      = what Paystack keeps (banded transfer fee + ₦50 stamp duty)
+    // netAmount = what the SME's bank account is credited with
     return tx.settlementPayout.create({
       data: {
         businessId,
-        amount: params.amount,
-        fee: 0,
-        netAmount: params.amount,
+        amount: quote.amount,
+        fee: quote.fee,
+        netAmount: quote.netAmount,
         destinationBankCode: business.settlementBankCode,
         destinationBankName: business.settlementBankName || 'Commercial Bank',
         destinationAccountNum: business.settlementAccountNumber,
@@ -463,7 +543,9 @@ export async function withdrawBalance(
     resourceType: 'settlement_payout',
     resourceId: payout.id,
     newData: {
-      amount: params.amount,
+      amount: quote.amount,
+      fee: quote.fee,
+      netAmount: quote.netAmount,
       transferReference,
       destinationBank: business.settlementBankName,
       accountLast4: business.settlementAccountNumber.slice(-4),
@@ -473,7 +555,9 @@ export async function withdrawBalance(
   logger.info('Withdrawal request submitted (awaiting admin approval)', {
     businessId,
     payoutId: payout.id,
-    amount: params.amount,
+    amount: quote.amount,
+    fee: quote.fee,
+    netAmount: quote.netAmount,
     reference: transferReference,
   });
 
@@ -481,7 +565,9 @@ export async function withdrawBalance(
     businessId,
     reminderType: 'payout_requested',
     scheduledDate: new Date(),
-    message: `Withdrawal request of ${formatNaira(params.amount)} received (ref ${transferReference}). We'll notify you once it's reviewed — usually within 1–2 business hours.`,
+    message: `Withdrawal request of ${formatNaira(quote.netAmount)}${
+      quote.fee > 0 ? ` (after Paystack's ${formatNaira(quote.fee)} fee)` : ''
+    } received (ref ${transferReference}). We'll notify you once it's reviewed — usually within 1–2 business hours.`,
     referenceType: 'settlement_payout',
     referenceId: payout.id,
   }).catch((err) =>
@@ -494,6 +580,8 @@ export async function withdrawBalance(
   return {
     id: payout.id,
     amount: toNumber(payout.amount),
+    fee: toNumber(payout.fee),
+    netAmount: toNumber(payout.netAmount),
     transferReference: payout.transferReference,
     status: payout.status, // 'pending'
     destinationBankName: payout.destinationBankName,
@@ -501,7 +589,12 @@ export async function withdrawBalance(
     destinationAccountName: payout.destinationAccountName,
     initiatedAt: payout.initiatedAt,
     completedAt: payout.completedAt,
-    message: 'Withdrawal request submitted. It will be processed once approved by an admin.',
+    message:
+      toNumber(payout.fee) > 0
+        ? `Withdrawal request for ${formatNaira(toNumber(payout.netAmount))} submitted (Paystack fee ${formatNaira(
+            toNumber(payout.fee)
+          )}). It will be processed once approved by an admin.`
+        : 'Withdrawal request submitted. It will be processed once approved by an admin.',
   };
 }
 
@@ -804,10 +897,20 @@ export async function adminApproveWithdrawal(adminUserId: string, payoutId: stri
       description: `Payout for ${payout.business.businessName}`,
     });
 
-    // Initiate transfer with pre-generated reference (from request time)
+    // Initiate transfer with pre-generated reference (from request time).
+    //
+    // We send `netAmount`, not `amount`: Paystack debits
+    // `netAmount + transferFee + stampDuty` from the balance, which is exactly
+    // the `amount` this payout reserved on the ledger. Sending `amount` instead
+    // would overdraw the Paystack balance by the fee on every withdrawal.
+    // (Legacy rows written before fees were modelled have netAmount === amount,
+    // so this stays correct for them too.)
+    const transferAmount =
+      toNumber(payout.netAmount) > 0 ? toNumber(payout.netAmount) : toNumber(payout.amount);
+
     const transferResult = await provider.initiateTransfer({
       source: 'balance',
-      amount: toNumber(payout.amount),
+      amount: transferAmount,
       recipient: recipient.recipientCode,
       reason: payout.narration || `Balance withdrawal for ${payout.business.businessName}`,
       reference: payout.transferReference,
@@ -833,6 +936,9 @@ export async function adminApproveWithdrawal(adminUserId: string, payoutId: stri
       resourceId: payout.id,
       newData: {
         amount: toNumber(payout.amount),
+        fee: toNumber(payout.fee),
+        netAmount: toNumber(payout.netAmount),
+        transferredToBank: transferAmount,
         transferReference: payout.transferReference,
         paystackTransferCode: transferResult.transferCode,
       },
@@ -842,6 +948,8 @@ export async function adminApproveWithdrawal(adminUserId: string, payoutId: stri
       payoutId: payout.id,
       businessId,
       amount: toNumber(payout.amount),
+      fee: toNumber(payout.fee),
+      transferredToBank: transferAmount,
       reference: payout.transferReference,
       adminUserId,
     });
@@ -850,7 +958,11 @@ export async function adminApproveWithdrawal(adminUserId: string, payoutId: stri
       businessId,
       reminderType: 'payout_approved',
       scheduledDate: new Date(),
-      message: `Your withdrawal of ${formatNaira(toNumber(payout.amount))} (ref ${payout.transferReference}) was approved. The transfer to your ${payout.destinationBankName} account ••••${payout.destinationAccountNum.slice(-4)} is in progress.`,
+      message: `Your withdrawal of ${formatNaira(transferAmount)} (ref ${payout.transferReference}) was approved${
+        toNumber(payout.fee) > 0
+          ? ` after Paystack's ${formatNaira(toNumber(payout.fee))} transfer fee`
+          : ''
+      }. The transfer to your ${payout.destinationBankName} account ••••${payout.destinationAccountNum.slice(-4)} is in progress.`,
       referenceType: 'settlement_payout',
       referenceId: payout.id,
     }).catch((remErr) =>
