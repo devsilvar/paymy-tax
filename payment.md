@@ -351,7 +351,20 @@ STEP 6: When a customer transfers money to that account:
 
 - **Account creation is asynchronous** — can take seconds to minutes. Don't promise instant account numbers.
 - **1,000 DVA limit** per Paystack merchant account. Email support@paystack.com if you need more.
-- **1% fee** per incoming transfer, capped at ₦300. This comes from the sender's transfer, not your balance.
+- **1% fee** per incoming transfer, capped at ₦300 — and **we** pay it, not the sender.
+  Paystack deducts it from the transfer and settles us the difference ("Transaction
+  charges are deducted per transaction, and we settle the difference via your payouts"
+  — https://support.paystack.com/en/articles/2130306). So a ₦10,000 DVA transfer lands
+  ₦9,900 in the Paystack balance; a ₦500,000 one lands ₦499,700 (fee capped at ₦300).
+  Earlier revisions of this doc said the sender absorbed it — that was wrong, and it is
+  why `getPayoutPreview` now subtracts `estimatedProcessingFees`. Modelled in
+  `src/lib/paystack-fees.ts`.
+- **Withdrawals cost money too, and it is banded — not a percentage.** Transfers out of a
+  Paystack balance cost ₦10 (≤ ₦5,000), ₦25 (₦5,001–₦50,000) or ₦50 (> ₦50,000)
+  (https://support.paystack.com/en/articles/2130370), **plus** a ₦50 government stamp duty
+  on every transfer of ₦10,000+ since 18 Feb 2026
+  (https://support.paystack.com/en/articles/7573314). A ₦100,000 withdrawal therefore
+  debits ₦100,100. `src/lib/paystack-fees.ts` is the single source of truth.
 - **No test mode** — you cannot test DVA with test keys. You must use live keys.
 - **Nigeria and Ghana only** — DVA is not available in other countries Paystack supports.
 - **Some business categories** (Betting, Financial Services, General Services) require extra KYC validation of the customer before DVA assignment.

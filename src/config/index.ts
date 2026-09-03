@@ -123,6 +123,38 @@ export const config = {
     // CI exercise settlement connect without real bank resolution.
     // NEVER set this in production; see paystack.provider.ts shouldUseBankFixture().
     mockBankResolution: process.env.PAYSTACK_MOCK_BANK_RESOLUTION === 'true',
+
+    // Paystack's published pricing. Rules, worked examples and the source URL
+    // for every number live in src/lib/paystack-fees.ts — read that first.
+    // These are the defaults as published on paystack.com/pricing and
+    // support.paystack.com on 2026-09-03; override via env if Paystack moves.
+    fees: {
+      // DVA inflow: 1% per transfer, capped at ₦300, deducted from the
+      // merchant's settlement (the sender is NOT charged extra).
+      dvaPct: Number(process.env.PAYSTACK_DVA_FEE_PCT ?? 1),
+      dvaCap: Number(process.env.PAYSTACK_DVA_FEE_CAP ?? 300),
+
+      // Withdrawals: banded FLAT transfer fee, not a percentage.
+      transferLow: Number(process.env.PAYSTACK_TRANSFER_FEE_LOW ?? 10),
+      transferLowMax: Number(process.env.PAYSTACK_TRANSFER_FEE_LOW_MAX ?? 5000),
+      transferMid: Number(process.env.PAYSTACK_TRANSFER_FEE_MID ?? 25),
+      transferMidMax: Number(process.env.PAYSTACK_TRANSFER_FEE_MID_MAX ?? 50000),
+      transferHigh: Number(process.env.PAYSTACK_TRANSFER_FEE_HIGH ?? 50),
+
+      // Nigeria Tax Act 2025 stamp duty, live since 18 Feb 2026: flat ₦50 on
+      // every transfer of ₦10,000+ out of a Paystack balance, on top of the
+      // transfer fee. Set to 0 only if the business is a registered payroll
+      // merchant (the only exemption Paystack documents).
+      stampDuty: Number(process.env.PAYSTACK_STAMP_DUTY ?? 50),
+      stampDutyFrom: Number(process.env.PAYSTACK_STAMP_DUTY_FROM ?? 10000),
+
+      // Who absorbs the withdrawal cost: 'merchant' deducts it from what the
+      // SME asked for; 'platform' pays it on top and the SME gets the full
+      // amount. Confirm with finance before flipping this.
+      withdrawalFeeBearer: (process.env.WITHDRAWAL_FEE_BEARER === 'platform'
+        ? 'platform'
+        : 'merchant') as 'merchant' | 'platform',
+    },
   },
 
   // DigitalOcean Spaces
