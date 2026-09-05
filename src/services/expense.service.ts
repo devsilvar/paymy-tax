@@ -245,6 +245,118 @@ export async function deleteExpense(
   return { message: 'Expense deleted successfully' };
 }
 
+// ─── Daily Summary ──────────────────────────────────────────
+
+/**
+ * Same-day totals grouped by category + the day's register rows, plus the
+ * same expense-intelligence ratio alerts scoped to the day.
+ *
+ * UTC day window — identical convention to the sales daily endpoint and
+ * getMonthlySummary, so daily and monthly numbers always reconcile.
+ */
+export async function getDailySummary(
+  userId: string,
+  businessId: string,
+  date?: string
+) {
+  await verifyBusinessOwnership(userId, businessId);
+
+  const day = date ?? new Date().toISOString().slice(0, 10);
+  const dayStart = new Date(`${day}T00:00:00.000Z`);
+  const dayEnd = new Date(`${day}T23:59:59.999Z`);
+  if (Number.isNaN(dayStart.getTime()) || Number.isNaN(dayEnd.getTime())) {
+    throw new AppError(400, 'Invalid date — expected YYYY-MM-DD', 'INVALID_DATE');
+  }
+  const tomorrowStr = new Date(Date.now() + 24 * 60 * 60 * 1000)
+    .toISOString()
+    .slice(0, 10);
+  if (day > tomorrowStr) {
+    throw new AppError(
+      400,
+      'Date cannot be more than a day in the future',
+      'INVALID_DATE'
+    );
+  }
+
+  const dateFilter = { gte: dayStart, lte: dayEnd };
+
+  const [expenseAgg, byCategory, transactions, salesAgg] = await Promise.all([
+    // Total expenses for the day
+    prisma.expense.aggregate({
+      where: { businessId, expenseDate: dateFilter },
+      _sum: { amount: true },
+    }),
+
+    // Breakdown by category
+    prisma.expense.groupBy({
+      by: ['category'],
+      where: { businessId, expenseDate: dateFilter },
+      _sum: { amount: true },
+      _count: true,
+    }),
+
+    // Register: the day's rows — capped to keep the payload bounded
+    prisma.expense.findMany({
+      where: { businessId, expenseDate: dateFilter },
+      orderBy: { expenseDate: 'desc' },
+      take: 200,
+      select: {
+        id: true,
+        amount: true,
+        category: true,
+        description: true,
+        expenseDate: true,
+        isDeductible: true,
+      },
+    }),
+
+    // Same-day settled sales — powers the low/high expense ratio alerts
+    prisma.salesTransaction.aggregate({
+      where: {
+        businessId,
+        transactionDate: dateFilter,
+        status: { in: ['confirmed', 'completed'] },
+      },
+      _sum: { amount: true },
+    }),
+  ]);
+
+  const totalExpenses = Number(expenseAgg._sum.amount ?? 0);
+  const totalSales = Number(salesAgg._sum.amount ?? 0);
+
+  // Same thresholds/rule as the monthly intelligence block below
+  const alerts: { type: string; message: string }[] = [];
+  if (totalSales > 0) {
+    const ratio = totalExpenses / totalSales;
+    const percentage = (ratio * 100).toFixed(1);
+    if (ratio < LOW_EXPENSE_THRESHOLD) {
+      alerts.push({
+        type: 'LOW_EXPENSE_WARNING',
+        message: `Your expenses (${percentage}% of sales) are unusually low today. You may be forgetting to log expenses — this inflates your taxable profit.`,
+      });
+    } else if (ratio > HIGH_EXPENSE_THRESHOLD) {
+      alerts.push({
+        type: 'HIGH_EXPENSE_WARNING',
+        message: `Your expenses (${percentage}% of sales) are unusually high today. Double-check your entries for typos or duplicates.`,
+      });
+    }
+  }
+
+  return {
+    date: day,
+    totalExpenses,
+    totalSales,
+    transactionCount: transactions.length,
+    categoryBreakdown: byCategory.map((entry) => ({
+      category: entry.category,
+      total: entry._sum.amount ?? 0,
+      count: entry._count,
+    })),
+    alerts,
+    transactions,
+  };
+}
+
 // ─── Summary with Expense Intelligence ──────────────────────
 
 const LOW_EXPENSE_THRESHOLD = 0.05;  // below 5% of sales → probably forgot to log

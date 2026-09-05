@@ -38,6 +38,13 @@ export const expenseSummaryQuerySchema = z.object({
   year: asNumber({ min: 2020, max: 2100, int: true }),
 });
 
+export const expenseDailyQuerySchema = z.object({
+  date: z
+    .string()
+    .regex(/^\d{4}-\d{2}-\d{2}$/, 'date must be in YYYY-MM-DD format')
+    .optional(),
+});
+
 export type CreateExpenseInput = z.infer<typeof createExpenseSchema>;
 export type UpdateExpenseInput = z.infer<typeof updateExpenseSchema>;
 export type ExpenseQueryInput = z.infer<typeof expenseQuerySchema>;

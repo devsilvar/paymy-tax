@@ -238,7 +238,8 @@ const SOURCE_ALIASES: Record<string, SourceEnum> = {
   online: 'online_store',
   ecommerce: 'online_store',
   web: 'online_store',
-  manual: 'manual',
+  // 'manual' was retired — legacy spreadsheets that say "manual" land on cash
+  manual: 'cash',
   cash: 'cash',
   walkin: 'cash',
   invoice: 'invoice',

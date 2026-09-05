@@ -8,6 +8,7 @@ import { getPaymentProvider } from '@/lib/payment';
 import { createReminderOnce } from '@/services/reminder.service';
 import { formatNaira } from '@/lib/format';
 import { verifyBusinessOwnership } from '@/lib/ownership';
+import { dvaProcessingFee, round2 } from '@/lib/paystack-fees';
 
 // ─── Helpers ────────────────────────────────────────────────
 
@@ -723,6 +724,12 @@ export async function processDVATransferWebhook(event: any) {
         paystackTransactionId: data.id,
         autoRecorded: true,
         splitSettled: isSplitSettled,
+          // Paystack reports its own charge for this transfer as `fees` (kobo)
+        // on charge.success. Stored next to the modelled 1%/₦300 figure that
+        // getPayoutPreview reserves, so the two can be reconciled: a persistent
+        // gap means Paystack changed pricing and config.paystack.fees is stale.
+        paystackFeeNaira: typeof data.fees === 'number' ? round2(data.fees / 100) : null,
+        paystackFeeModelledNaira: dvaProcessingFee(amount),
       },
       needsVerification: true,
       customerHint,
@@ -913,4 +920,4 @@ export async function getDVATransactions(
       hasPrev: page > 1,
     },
   };
-}
+}

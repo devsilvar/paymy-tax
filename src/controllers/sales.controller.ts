@@ -6,6 +6,7 @@ import {
   updateSaleSchema,
   salesQuerySchema,
   salesSummaryQuerySchema,
+  salesDailyQuerySchema,
   salesOverviewQuerySchema,
 } from '@/validators/sales.validator';
 import * as salesService from '@/services/sales.service';
@@ -118,6 +119,20 @@ export const summary = asyncHandler(async (req: AuthenticatedRequest, res: Respo
   });
 });
 
+export const daily = asyncHandler(async (req: AuthenticatedRequest, res: Response) => {
+  const { date } = salesDailyQuerySchema.parse(req.query);
+  const result = await salesService.getDailySummary(
+    req.user!.userId,
+    req.params.businessId,
+    date
+  );
+
+  res.status(200).json({
+    success: true,
+    data: result,
+  });
+});
+
 
 export const getUnverified = asyncHandler(async (req: AuthenticatedRequest, res: Response) => {
   const query = {
@@ -138,13 +153,18 @@ export const getUnverified = asyncHandler(async (req: AuthenticatedRequest, res:
 });
 
 export const verify = asyncHandler(async (req: AuthenticatedRequest, res: Response) => {
-  const { classification = 'sale' } = req.body;
+  const { classification = 'sale', customerName, description } = req.body;
 
   const sale = await salesService.verifySale(
     req.user!.userId,
     req.params.businessId,
     req.params.id,
-    classification
+    classification,
+    undefined,
+    {
+      customerName: typeof customerName === 'string' ? customerName : undefined,
+      description: typeof description === 'string' ? description : undefined,
+    }
   );
 
   res.status(200).json({

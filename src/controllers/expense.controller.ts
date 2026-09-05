@@ -6,6 +6,7 @@ import {
   updateExpenseSchema,
   expenseQuerySchema,
   expenseSummaryQuerySchema,
+  expenseDailyQuerySchema,
 } from '@/validators/expense.validator';
 import * as expenseService from '@/services/expense.service';
 
@@ -88,6 +89,20 @@ export const summary = asyncHandler(async (req: AuthenticatedRequest, res: Respo
     req.params.businessId,
     month,
     year
+  );
+
+  res.status(200).json({
+    success: true,
+    data: result,
+  });
+});
+
+export const daily = asyncHandler(async (req: AuthenticatedRequest, res: Response) => {
+  const { date } = expenseDailyQuerySchema.parse(req.query);
+  const result = await expenseService.getDailySummary(
+    req.user!.userId,
+    req.params.businessId,
+    date
   );
 
   res.status(200).json({

@@ -2,6 +2,7 @@ import prisma, { TxClient } from '@/lib/prisma';
 import logger from '@/lib/logger';
 import { AppError } from '@/middleware/errorHandler';
 import { logAudit } from '@/lib/audit';
+import { Prisma } from '@prisma/client';
 import { CreateSaleInput, UpdateSaleInput, SalesOverviewQueryInput } from '@/validators/sales.validator';
 import { verifyBusinessOwnership } from '@/lib/ownership';
 
@@ -327,6 +328,98 @@ export async function getMonthlySummary(
   };
 }
 
+// ─── Daily Summary ──────────────────────────────────────────
+
+/**
+ * Same-day totals grouped by payment type (source) + the day's register rows.
+ *
+ * Day boundaries are UTC midnight → 23:59:59.999 — deliberately identical to
+ * getSalesAndExpensesOverview (see `todayStart/todayEnd` above) and
+ * getMonthlySummary, so Σ(daily boxes over a month) always reconciles with
+ * the monthly total. No isTaxable filter (matches getMonthlySummary, NOT
+ * /overview — see salesexpense.md §3.3).
+ */
+export async function getDailySummary(
+  userId: string,
+  businessId: string,
+  date?: string
+) {
+  await verifyBusinessOwnership(userId, businessId);
+
+  const day = date ?? new Date().toISOString().slice(0, 10);
+  const dayStart = new Date(`${day}T00:00:00.000Z`);
+  const dayEnd = new Date(`${day}T23:59:59.999Z`);
+  if (Number.isNaN(dayStart.getTime()) || Number.isNaN(dayEnd.getTime())) {
+    throw new AppError(400, 'Invalid date — expected YYYY-MM-DD', 'INVALID_DATE');
+  }
+  // String compare is safe on zero-padded YYYY-MM-DD. "Today" is allowed;
+  // anything past tomorrow (UTC) is rejected so future-dated boxes can't lie.
+  const tomorrowStr = new Date(Date.now() + 24 * 60 * 60 * 1000)
+    .toISOString()
+    .slice(0, 10);
+  if (day > tomorrowStr) {
+    throw new AppError(
+      400,
+      'Date cannot be more than a day in the future',
+      'INVALID_DATE'
+    );
+  }
+
+  const settledWhere: Prisma.SalesTransactionWhereInput = {
+    businessId,
+    transactionDate: { gte: dayStart, lte: dayEnd },
+    // Settled statuses only — same rule as getMonthlySummary ('confirmed'
+    // is canonical, 'completed' is legacy). See SALES_SUMMARY_API_FIX.md.
+    status: { in: ['confirmed', 'completed'] },
+  };
+
+  const [aggregation, bySource, transactions] = await Promise.all([
+    prisma.salesTransaction.aggregate({
+      where: settledWhere,
+      _sum: { amount: true },
+    }),
+
+    // Breakdown by payment type — mirrors the monthly summary's shape so the
+    // frontend shares one type + one mapping (labels live in the UI layer).
+    prisma.salesTransaction.groupBy({
+      by: ['source'],
+      where: settledWhere,
+      _sum: { amount: true },
+      _count: true,
+    }),
+
+    // Register: every row dated today (any status) so pending/reversed
+    // entries are visible too — capped to keep the payload bounded.
+    prisma.salesTransaction.findMany({
+      where: { businessId, transactionDate: { gte: dayStart, lte: dayEnd } },
+      orderBy: { transactionDate: 'desc' },
+      take: 200,
+      select: {
+        id: true,
+        amount: true,
+        source: true,
+        status: true,
+        description: true,
+        customerName: true,
+        transactionDate: true,
+        referenceId: true,
+      },
+    }),
+  ]);
+
+  return {
+    date: day,
+    totalSales: aggregation._sum.amount ?? 0,
+    transactionCount: transactions.length,
+    sourceBreakdown: bySource.map((entry) => ({
+      source: entry.source,
+      total: entry._sum.amount ?? 0,
+      count: entry._count,
+    })),
+    transactions,
+  };
+}
+
 // ─── Verification ───────────────────────────────────────────
 
 export async function getUnverifiedSales(
@@ -367,12 +460,30 @@ export async function getUnverifiedSales(
   };
 }
 
+// Legacy identifiers that older clients / scripts still send. They are not
+// real classification names — map them to the canonical seeded names so old
+// callers don't get INVALID_CLASSIFICATION. The canonical DB name always wins.
+const LEGACY_CLASSIFICATION_ALIASES: Record<string, string> = {
+  sale: 'Product Sale',
+  sales_revenue: 'Product Sale',
+  service_revenue: 'Service Revenue',
+  business_income: 'Product Sale',
+};
+
+function slugifyClassification(value: string): string {
+  return value
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '_')
+    .replace(/^_+|_+$/g, '');
+}
+
 export async function verifySale(
   userId: string,
   businessId: string,
   saleId: string,
   classificationName: string,
-  tx?: TxClient
+  tx?: TxClient,
+  meta?: { customerName?: string; description?: string }
 ) {
   const db = tx ?? prisma;
 
@@ -388,16 +499,36 @@ export async function verifySale(
     throw new AppError(400, 'Sale is already verified', 'ALREADY_VERIFIED');
   }
 
-  // Find classification
-  const classification = await db.transactionClassification.findFirst({
-    where: {
-      OR: [
-        { name: classificationName },
-        { name: { equals: classificationName, mode: 'insensitive' } },
-      ],
-      isActive: true,
-    },
-  });
+  // Resolve the classification. Accepts, in order of precedence:
+  //   1. Exact / case-insensitive display name ("Product Sale")
+  //   2. Legacy alias slug ("sales_revenue", "sale", "service_revenue")
+  //   3. Slugified display name ("product_sale" → "Product Sale")
+  // The canonical DB name is what gets persisted to finalClassification.
+  let classification =
+    (await db.transactionClassification.findFirst({
+      where: {
+        OR: [
+          { name: classificationName },
+          { name: { equals: classificationName, mode: 'insensitive' } },
+        ],
+        isActive: true,
+      },
+    })) ??
+    (await (async () => {
+      const aliased = LEGACY_CLASSIFICATION_ALIASES[classificationName.trim().toLowerCase()];
+      if (!aliased) return null;
+      return db.transactionClassification.findFirst({
+        where: { name: aliased, isActive: true },
+      });
+    })()) ??
+    (await (async () => {
+      const slug = slugifyClassification(classificationName);
+      if (!slug) return null;
+      const active = await db.transactionClassification.findMany({
+        where: { isActive: true },
+      });
+      return active.find((c) => slugifyClassification(c.name) === slug) ?? null;
+    })());
 
   if (!classification) {
     throw new AppError(400, `Classification "${classificationName}" not found`, 'INVALID_CLASSIFICATION');
@@ -413,10 +544,16 @@ export async function verifySale(
       needsVerification: false,
       verifiedAt: new Date(),
       verifiedBy: userId,
-      finalClassification: classificationName,
+      finalClassification: classification.name,
       classificationId: classification.id,
       status: 'confirmed', // Always confirm when verified
       isTaxable,
+      ...(meta?.customerName !== undefined && meta.customerName !== ''
+        ? { customerName: meta.customerName }
+        : {}),
+      ...(meta?.description !== undefined && meta.description !== ''
+        ? { description: meta.description }
+        : {}),
     },
   });
 
@@ -427,7 +564,7 @@ export async function verifySale(
     resourceType: 'sales_transaction',
     resourceId: saleId,
     newData: {
-      classification: classificationName,
+      classification: classification.name,
       category: classification.category,
       isTaxable,
       isRevenue,
@@ -438,7 +575,7 @@ export async function verifySale(
     saleId,
     businessId,
     userId,
-    classification: classificationName,
+    classification: classification.name,
     category: classification.category,
     isTaxable,
     isRevenue,

@@ -1,4 +1,5 @@
 import bcrypt from 'bcrypt';
+import jwt from 'jsonwebtoken';
 import prisma from '@/lib/prisma';
 import config from '@/config';
 import logger from '@/lib/logger';
@@ -107,7 +108,7 @@ export async function verifyPin(
   pin: string,
   ipAddress?: string,
   userAgent?: string
-): Promise<{ valid: boolean }> {
+): Promise<{ valid: boolean; stepUpToken?: string }> {
   const user = await prisma.user.findUnique({
     where: { id: userId },
     select: {
@@ -207,7 +208,37 @@ export async function verifyPin(
     });
   }
 
-  return { valid: true };
+  // Generate a short-lived step-up token (5 minutes) for sensitive operations
+  const stepUpToken = jwt.sign(
+    { userId, purpose: 'pin_step_up' },
+    config.jwt.accessSecret,
+    { expiresIn: '5m' } as jwt.SignOptions
+  );
+
+  return { valid: true, stepUpToken };
+}
+
+/**
+ * Validates a PIN step-up authentication JWT token.
+ * Throws AppError(401) if missing, expired, or invalid.
+ */
+export function verifyStepUpToken(userId: string, stepUpToken: string): { userId: string; purpose: string } {
+  if (!stepUpToken) {
+    throw new AppError(401, 'Step-up token is required. Please enter your PIN.', 'INVALID_STEP_UP_TOKEN');
+  }
+
+  let decoded: any;
+  try {
+    decoded = jwt.verify(stepUpToken, config.jwt.accessSecret);
+  } catch {
+    throw new AppError(401, 'Step-up token is invalid or expired. Please re-enter your PIN.', 'INVALID_STEP_UP_TOKEN');
+  }
+
+  if (decoded.purpose !== 'pin_step_up' || decoded.userId !== userId) {
+    throw new AppError(401, 'Step-up token is invalid or expired. Please re-enter your PIN.', 'INVALID_STEP_UP_TOKEN');
+  }
+
+  return decoded;
 }
 
 export async function changePin(

@@ -38,13 +38,24 @@ async function main() {
   // =================================
   console.log('🔑 Creating admin user...');
 
+  const defaultPinHash = await hashPassword('1234');
+
   const adminUser = await prisma.user.upsert({
     where: { email: 'admin@paymytax.com' },
-    update: {},
+    update: {
+      bvn: '22222222221',
+      bvnVerifiedAt: new Date(),
+      transactionPin: defaultPinHash,
+      pinSetAt: new Date(),
+    },
     create: {
       email: 'admin@paymytax.com',
       passwordHash: await hashPassword('Admin@123456'),
       role: 'admin',
+      bvn: '22222222221',
+      bvnVerifiedAt: new Date(),
+      transactionPin: defaultPinHash,
+      pinSetAt: new Date(),
       isVerified: true,
       isActive: true,
     },
@@ -59,11 +70,20 @@ async function main() {
 
   const testUser1 = await prisma.user.upsert({
     where: { email: 'john@example.com' },
-    update: {},
+    update: {
+      bvn: '22222222221',
+      bvnVerifiedAt: new Date(),
+      transactionPin: defaultPinHash,
+      pinSetAt: new Date(),
+    },
     create: {
       email: 'john@example.com',
       passwordHash: await hashPassword('Password123!'),
       phone: '+2348012345678',
+      bvn: '22222222221',
+      bvnVerifiedAt: new Date(),
+      transactionPin: defaultPinHash,
+      pinSetAt: new Date(),
       isVerified: true,
       isActive: true,
     },
@@ -71,11 +91,20 @@ async function main() {
 
   const testUser2 = await prisma.user.upsert({
     where: { email: 'jane@example.com' },
-    update: {},
+    update: {
+      bvn: '22222222222',
+      bvnVerifiedAt: new Date(),
+      transactionPin: defaultPinHash,
+      pinSetAt: new Date(),
+    },
     create: {
       email: 'jane@example.com',
       passwordHash: await hashPassword('Password123!'),
       phone: '+2348087654321',
+      bvn: '22222222222',
+      bvnVerifiedAt: new Date(),
+      transactionPin: defaultPinHash,
+      pinSetAt: new Date(),
       isVerified: true,
       isActive: true,
     },
@@ -136,7 +165,7 @@ async function main() {
     { amount: 200000, source: 'bank_transfer', description: 'Bank transfer payment', date: new Date('2026-03-10') },
     { amount: 75000, source: 'paycode', description: 'PayCode transaction', date: new Date('2026-03-15') },
     { amount: 180000, source: 'pos', description: 'POS sales - Week 3', date: new Date('2026-03-18') },
-    { amount: 95000, source: 'manual', description: 'Cash sales', date: new Date('2026-03-20') },
+    { amount: 95000, source: 'cash', description: 'Cash sales', date: new Date('2026-03-20') },
     { amount: 45000, source: 'cash', description: 'Walk-in cash payment', date: new Date('2026-03-22') },
     { amount: 250000, source: 'invoice', description: 'Invoice INV-2026-042 - settled via bank transfer', date: new Date('2026-03-25') },
   ];

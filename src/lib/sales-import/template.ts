@@ -16,7 +16,9 @@
 
 import ExcelJS from 'exceljs';
 
-const SOURCE_VALUES = ['bank_transfer', 'paycode', 'pos', 'online_store', 'manual', 'cash', 'invoice'] as const;
+// 'manual' was retired — new rows use 'cash'. Legacy spreadsheets importing
+// "manual" are aliased to 'cash' in validator.ts (SOURCE_ALIASES).
+const SOURCE_VALUES = ['bank_transfer', 'paycode', 'pos', 'online_store', 'cash', 'invoice'] as const;
 
 const HEADERS = [
   { key: 'transaction_date', label: 'transaction_date', width: 18 },
@@ -47,7 +49,7 @@ const EXAMPLE_ROWS: Array<Record<string, string | number>> = [
   {
     transaction_date: '2026-04-05',
     amount: 8500,
-    source: 'manual',
+    source: 'cash',
     customer_name: 'Wale adejugbagbe',
     description: 'Walk-in customer — cash',
     reference_id: '',

@@ -73,6 +73,14 @@ export const resetPasswordSchema = z.object({
     ),
 });
 
+export const updateBvnSchema = z.object({
+  bvn: z
+    .string()
+    .trim()
+    .regex(/^\d{11,12}$/, 'BVN must be 11 or 12 digits'),
+  stepUpToken: z.string().min(1, 'Step-up token is required'),
+});
+
 export type RegisterInput = z.infer<typeof registerSchema>;
 export type LoginInput = z.infer<typeof loginSchema>;
 export type RefreshTokenInput = z.infer<typeof refreshTokenSchema>;
@@ -80,3 +88,5 @@ export type ChangePasswordInput = z.infer<typeof changePasswordSchema>;
 export type ForgotPasswordInput = z.infer<typeof forgotPasswordSchema>;
 export type UpdateMeInput = z.infer<typeof updateMeSchema>;
 export type ResetPasswordInput = z.infer<typeof resetPasswordSchema>;
+export type UpdateBvnInput = z.infer<typeof updateBvnSchema>;
+

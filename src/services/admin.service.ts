@@ -24,9 +24,24 @@ export async function getDashboardStats() {
       }),
     ]);
 
-  const revenueResult = await prisma.monthlyTaxReport.aggregate({
-    _sum: { totalSales: true },
-  });
+  const [revenueResult, pendingWithdrawals] = await Promise.all([
+    prisma.monthlyTaxReport.aggregate({
+      _sum: { totalSales: true },
+    }),
+    prisma.settlementPayout.findMany({
+      where: { status: 'pending' },
+      select: { createdAt: true },
+      orderBy: { createdAt: 'asc' },
+    }),
+  ]);
+
+  const now = Date.now();
+  const breachedWithdrawals = pendingWithdrawals.filter(
+    (w) => (now - w.createdAt.getTime()) > 24 * 60 * 60 * 1000
+  );
+  const oldestPendingHours = pendingWithdrawals.length > 0
+    ? Math.round((now - pendingWithdrawals[0].createdAt.getTime()) / (1000 * 60 * 60))
+    : 0;
 
   return {
     totalUsers,
@@ -34,6 +49,11 @@ export async function getDashboardStats() {
     totalTaxReports,
     totalRevenueProcessed: revenueResult._sum.totalSales ?? 0,
     recentSignups,
+    withdrawalSla: {
+      pendingCount: pendingWithdrawals.length,
+      breachedCount: breachedWithdrawals.length,
+      oldestPendingHours,
+    },
   };
 }
 

@@ -597,7 +597,12 @@ export async function processWebhook(signature: string, rawBody: string) {
           businessId: payout.businessId,
           reminderType: 'payout_completed',
           scheduledDate: new Date(),
-          message: `Your withdrawal of ${formatNaira(Number(payout.amount))} (ref ${ref || payout.transferReference}) was successfully transferred to your ${payout.destinationBankName} account.`,
+          // What LANDED in the bank is netAmount (amount minus Paystack's
+          // transfer fee + stamp duty). Legacy rows written before fees were
+          // modelled have netAmount === amount, so the fallback stays correct.
+          message: `Your withdrawal of ${formatNaira(
+            Number(payout.netAmount) > 0 ? Number(payout.netAmount) : Number(payout.amount)
+          )} (ref ${ref || payout.transferReference}) was successfully transferred to your ${payout.destinationBankName} account.`,
           referenceType: 'settlement_payout',
           referenceId: payout.id,
         }).catch((err) =>

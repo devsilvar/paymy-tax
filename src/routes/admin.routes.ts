@@ -24,6 +24,7 @@ router.delete('/businesses/:businessId/payout-change-permit', adminController.re
 router.get('/settlement/withdrawals', adminController.listWithdrawalRequests);
 router.post('/settlement/withdrawals/:id/approve', adminController.approveWithdrawalRequest);
 router.post('/settlement/withdrawals/:id/reject', adminController.rejectWithdrawalRequest);
+router.post('/settlement/withdrawals/:id/requery', adminController.requeryWithdrawalRequest);
 
 // FIRS remittance tracking & reconciliation
 router.get('/remittances/summary', remittanceController.getSummary);

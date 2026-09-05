@@ -138,16 +138,20 @@ export const listWithdrawalRequests = asyncHandler(
     const status = req.query.status as 'pending' | 'processing' | 'completed' | 'failed' | undefined;
     const page = req.query.page ? Number(req.query.page) : undefined;
     const limit = req.query.limit ? Number(req.query.limit) : undefined;
+    const search = typeof req.query.search === 'string' ? req.query.search : undefined;
 
     const result = await settlementService.adminListWithdrawalRequests({
       status,
+      search,
       page,
       limit,
     });
 
     res.status(200).json({
       success: true,
-      ...result,
+      data: result.items,
+      items: result.items,
+      pagination: result.pagination,
     });
   }
 );
@@ -190,6 +194,21 @@ export const rejectWithdrawalRequest = asyncHandler(
       success: true,
       data: result,
       message: 'Withdrawal request rejected.',
+    });
+  }
+);
+
+export const requeryWithdrawalRequest = asyncHandler(
+  async (req: AuthenticatedRequest, res: Response) => {
+    const result = await settlementService.adminRequeryWithdrawal(
+      req.user!.userId,
+      req.params.id
+    );
+
+    res.status(200).json({
+      success: true,
+      data: result,
+      message: result.message,
     });
   }
 );

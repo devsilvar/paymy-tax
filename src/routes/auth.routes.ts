@@ -18,6 +18,10 @@ router.put('/change-password', authenticate, authController.changePassword);
 router.post('/forgot-password', passwordResetRateLimiter, authController.forgotPassword);
 router.post('/reset-password', passwordResetRateLimiter, authController.resetPassword);
 
+// ─── Sensitive Data (PIN Step-Up Required) ──────────────────
+router.post('/reveal-bvn', authenticate, authController.revealBvn);
+router.post('/update-bvn', authenticate, authController.updateBvn);
+
 // ─── Transaction PIN Management (Authenticated) ────────────
 router.get('/pin/status', authenticate, pinController.getStatus);
 router.post('/pin/setup', authenticate, pinController.setup);

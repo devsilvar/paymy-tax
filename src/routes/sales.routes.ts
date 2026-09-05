@@ -15,6 +15,7 @@ router.post('/', salesController.create);
 router.get('/', salesController.getAll);
 router.get('/overview', salesController.getOverview);
 router.get('/summary', salesController.summary);
+router.get('/daily', salesController.daily);
 router.get('/unverified', salesController.getUnverified);
 
 

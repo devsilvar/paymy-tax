@@ -151,6 +151,14 @@ export interface BankRecord {
   active: boolean;
 }
 
+export interface VerifyTransferResult {
+  reference: string;
+  status: string;
+  transferCode?: string;
+  amount?: number;
+  gatewayResponse?: string;
+}
+
 // ─── Provider Interface ─────────────────────────────────────
 
 export interface PaymentProvider {
@@ -180,4 +188,5 @@ export interface PaymentProvider {
   ): Promise<SplitDedicatedAccountResult>;
   createTransferRecipient(params: CreateTransferRecipientParams): Promise<CreateTransferRecipientResult>;
   initiateTransfer(params: InitiateTransferParams): Promise<InitiateTransferResult>;
+  verifyTransfer(reference: string): Promise<VerifyTransferResult>;
 }

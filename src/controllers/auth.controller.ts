@@ -9,6 +9,7 @@ import {
   forgotPasswordSchema,
   resetPasswordSchema,
   updateMeSchema,
+  updateBvnSchema,
 } from '@/validators/auth.validator';
 import * as authService from '@/services/auth.service';
 
@@ -103,3 +104,33 @@ export const resetPassword = asyncHandler(async (req: Request, res: Response) =>
     message: result.message,
   });
 });
+
+export const revealBvn = asyncHandler(async (req: AuthenticatedRequest, res: Response) => {
+  const { stepUpToken } = req.body;
+  if (!stepUpToken || typeof stepUpToken !== 'string') {
+    return res.status(400).json({
+      success: false,
+      error: { code: 'MISSING_STEP_UP_TOKEN', message: 'stepUpToken is required' },
+    });
+  }
+
+  const result = await authService.revealBvn(req.user!.userId, stepUpToken);
+
+  res.status(200).json({
+    success: true,
+    data: result,
+  });
+});
+
+export const updateBvn = asyncHandler(async (req: AuthenticatedRequest, res: Response) => {
+  const input = updateBvnSchema.parse(req.body);
+  const result = await authService.updateBvn(
+    req.user!.userId,
+    input,
+    req.ip,
+    req.get('user-agent')
+  );
+
+  res.status(200).json(result);
+});
+

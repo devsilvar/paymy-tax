@@ -6,9 +6,10 @@ import prisma from '@/lib/prisma';
 import logger from '@/lib/logger';
 import { AppError } from '@/middleware/errorHandler';
 import { JWTPayload } from '@/types';
-import { RegisterInput, LoginInput } from '@/validators/auth.validator';
+import { RegisterInput, LoginInput, UpdateBvnInput } from '@/validators/auth.validator';
 import { logAudit } from '@/lib/audit';
 import { recordSession, hashRefreshToken } from './session.service';
+import { verifyStepUpToken } from './pin.service';
 
 // Optimized for small container CPU (0.5 CPU): 10 rounds = ~80ms vs 12 rounds = ~350-600ms
 // Industry standard is 10 rounds (2^10 = 1024 iterations), sufficient for 2026 threat model
@@ -27,8 +28,124 @@ function generateTokens(payload: { userId: string; email: string; role: string }
 }
 
 function sanitizeUser(user: any) {
-  const { passwordHash, ...rest } = user;
-  return rest;
+  const { passwordHash, bvn, nin, transactionPin, ...rest } = user;
+  return {
+    ...rest,
+    bvnLast4: bvn ? `•••••${bvn.slice(-4)}` : null,
+  };
+}
+
+/**
+ * Reveal the user's BVN after PIN step-up authentication.
+ *
+ * Requires a short-lived step-up token issued by `pin.service.verifyPin`.
+ * The token is a JWT signed with the access secret, with purpose = 'pin_step_up'.
+ */
+export async function revealBvn(userId: string, stepUpToken: string) {
+  // Validate the step-up token
+  verifyStepUpToken(userId, stepUpToken);
+
+  const user = await prisma.user.findUnique({
+    where: { id: userId },
+    select: { bvn: true },
+  });
+
+  if (!user) {
+    throw new AppError(404, 'User not found', 'USER_NOT_FOUND');
+  }
+
+  if (!user.bvn) {
+    throw new AppError(404, 'No BVN on file', 'BVN_NOT_FOUND');
+  }
+
+  return { bvn: user.bvn };
+}
+
+/**
+ * Update the user's BVN after PIN step-up authentication.
+ *
+ * Requires a short-lived step-up token issued by `pin.service.verifyPin`.
+ * Enforces uniqueness across accounts and writes an audit trail.
+ */
+export async function updateBvn(
+  userId: string,
+  input: UpdateBvnInput,
+  ipAddress?: string,
+  userAgent?: string
+) {
+  // 1. Validate the step-up token
+  verifyStepUpToken(userId, input.stepUpToken);
+
+  // 2. Load current user
+  const user = await prisma.user.findUnique({
+    where: { id: userId },
+    select: { id: true, bvn: true },
+  });
+
+  if (!user) {
+    throw new AppError(404, 'User not found', 'USER_NOT_FOUND');
+  }
+
+  // 3. No-op if unchanged
+  if (user.bvn === input.bvn) {
+    return { success: true, message: 'BVN is already up to date.' };
+  }
+
+  // 4. Uniqueness pre-check across accounts
+  const existing = await prisma.user.findFirst({
+    where: { bvn: input.bvn, id: { not: userId } },
+    select: { id: true },
+  });
+
+  if (existing) {
+    throw new AppError(409, 'This BVN is already linked to another account', 'BVN_ALREADY_LINKED');
+  }
+
+  const oldLast4 = user.bvn ? user.bvn.slice(-4) : null;
+  const newLast4 = input.bvn.slice(-4);
+  const now = new Date();
+
+  // 5. Atomic update + transactional audit log
+  await prisma.$transaction(async (tx) => {
+    await tx.user.update({
+      where: { id: userId },
+      data: {
+        bvn: input.bvn,
+        bvnVerifiedAt: now,
+      },
+    });
+
+    logAudit(
+      {
+        userId,
+        action: 'user.bvn_updated',
+        resourceType: 'user_security',
+        resourceId: userId,
+        ipAddress,
+        userAgent,
+        oldData: { bvnLast4: oldLast4 },
+        newData: { bvnLast4: newLast4, bvnVerifiedAt: now.toISOString() },
+      },
+      tx
+    );
+  });
+
+  // 6. Check for active DVA to inform user if re-auth may be needed
+  const businessesWithDva = await prisma.business.findMany({
+    where: { userId, virtualAccountNumber: { not: null } },
+    select: { id: true },
+  });
+
+  logger.info('User BVN updated successfully', { userId, bvnLast4: newLast4 });
+
+  return {
+    success: true,
+    message: 'BVN updated successfully',
+    meta: {
+      dvaReauthRequired: businessesWithDva.length > 0,
+      bvnLast4: `•••••${newLast4}`,
+    },
+  };
 }
 
 export async function register(input: RegisterInput) {

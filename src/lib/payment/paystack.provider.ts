@@ -22,6 +22,7 @@ import {
   CreateTransferRecipientResult,
   InitiateTransferParams,
   InitiateTransferResult,
+  VerifyTransferResult,
 } from './types';
 
 const BASE_URL = 'https://api.paystack.co';
@@ -504,6 +505,20 @@ export class PaystackProvider implements PaymentProvider {
       status: data.status || 'success',
       reference: params.reference,
       amount: params.amount,
+    };
+  }
+
+  /**
+   * Verify status of a transfer by reference
+   */
+  async verifyTransfer(reference: string): Promise<VerifyTransferResult> {
+    const data = await this.request('GET', `/transfer/verify/${encodeURIComponent(reference)}`);
+    return {
+      reference: data.reference,
+      status: data.status,
+      transferCode: data.transfer_code,
+      amount: data.amount ? data.amount / 100 : undefined,
+      gatewayResponse: data.gateway_response,
     };
   }
 }

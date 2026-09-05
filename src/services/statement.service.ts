@@ -269,7 +269,7 @@ export async function getLedgerStatementPdf(
     to: query.to,
     type: 'all',
     page: 1,
-    limit: 100,
+    limit: 5000,
   });
 
   const statementRef = `STMT-${business.merchantId}-${Date.now().toString(36).toUpperCase()}`;

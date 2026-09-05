@@ -19,29 +19,47 @@ export const connectSettlementSchema = z.object({
     .string()
     .regex(/^\d{4}$/, 'Transaction PIN must be exactly 4 digits')
     .optional(),
+  stepUpToken: z.string().min(1, 'Step-up authorization token is required').optional(),
 });
 
-export const withdrawBalanceSchema = z.object({
-  amount: z
-    .number()
-    .positive('Withdrawal amount must be greater than zero')
-    .min(100, 'Minimum withdrawal amount is ₦100.00'),
-  pin: z
-    .string()
-    .regex(/^\d{4}$/, 'Transaction PIN must be exactly 4 digits'),
-  narration: z.string().trim().max(100, 'Narration cannot exceed 100 characters').optional(),
-});
+export const withdrawBalanceSchema = z
+  .object({
+    amount: z
+      .number()
+      .positive('Withdrawal amount must be greater than zero')
+      .min(100, 'Minimum withdrawal amount is ₦100.00'),
+    pin: z
+      .string()
+      .regex(/^\d{4}$/, 'Transaction PIN must be exactly 4 digits')
+      .optional(),
+    stepUpToken: z.string().min(1, 'Step-up authorization token is required').optional(),
+    narration: z.string().trim().max(100, 'Narration cannot exceed 100 characters').optional(),
+  })
+  .refine((data) => Boolean(data.pin || data.stepUpToken), {
+    message: 'Either transaction PIN or step-up authorization token is required',
+    path: ['pin'],
+  });
 
-export const toggleAutoSplitSchema = z.object({
-  enabled: z.boolean(),
-  taxSplitPercentage: z.number().min(0).max(100).optional().default(7.5),
-  pin: z.string().regex(/^\d{4}$/, 'Transaction PIN must be exactly 4 digits'),
-});
+export const toggleAutoSplitSchema = z
+  .object({
+    enabled: z.boolean(),
+    taxSplitPercentage: z.number().min(0).max(100).optional().default(7.5),
+    pin: z
+      .string()
+      .regex(/^\d{4}$/, 'Transaction PIN must be exactly 4 digits')
+      .optional(),
+    stepUpToken: z.string().min(1, 'Step-up authorization token is required').optional(),
+  })
+  .refine((data) => Boolean(data.pin || data.stepUpToken), {
+    message: 'Either transaction PIN or step-up authorization token is required',
+    path: ['pin'],
+  });
 
 export const payoutHistoryQuerySchema = z.object({
   page: z.coerce.number().int().positive().optional().default(1),
   limit: z.coerce.number().int().positive().max(100).optional().default(20),
   status: z.enum(['pending', 'processing', 'completed', 'failed']).optional(),
+  search: z.string().trim().optional(),
 });
 
 export const rejectWithdrawalSchema = z.object({

@@ -42,6 +42,13 @@ export const salesSummaryQuerySchema = z.object({
   year: asNumber({ min: 2020, max: 2100, int: true }),
 });
 
+export const salesDailyQuerySchema = z.object({
+  date: z
+    .string()
+    .regex(/^\d{4}-\d{2}-\d{2}$/, 'date must be in YYYY-MM-DD format')
+    .optional(),
+});
+
 export const salesOverviewQuerySchema = z.object({
   period: z.enum(['7d', '30d', '3m', '6m', '12m', 'ytd', 'all', 'custom']).default('12m'),
   from: asStringOptional,
