@@ -45,6 +45,10 @@ tmp/
 temp/
 *.tmp
 
+# Local Database Backups
+backups/
+*.dump
+
 # Executables
 *.exe
 *.dll

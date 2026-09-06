@@ -492,13 +492,16 @@ export async function withdrawBalance(
   let quote: ReturnType<typeof quoteWithdrawal>;
   try {
     quote = quoteWithdrawal(params.amount);
-  } catch {
+  } catch (err) {
     throw new AppError(
       400,
-      'That amount is too small — Paystack’s transfer fee would consume all of it. Please withdraw a larger amount.',
-      'AMOUNT_BELOW_TRANSFER_FEE'
+      err instanceof Error ? err.message : 'Invalid withdrawal amount',
+      'INVALID_WITHDRAWAL_AMOUNT'
     );
   }
+
+  const isAutoPayout = Boolean(business.autoPayoutEnabled);
+  const initialStatus = isAutoPayout ? 'processing' : 'pending';
 
   // 4. Atomic request creation with triple-fence protection
   const payout = await prisma.$transaction(async (tx) => {
@@ -527,8 +530,6 @@ export async function withdrawBalance(
         {
           available: preview.availableForWithdrawal,
           requested: params.amount,
-             // merchant mode: the ledger debit equals what was asked for.
-          // platform mode: the ledger debit is the amount PLUS Paystack's fee.
           required: quote.amount,
           withdrawalFee: quote.fee,
           taxReserve: preview.taxReserve,
@@ -537,15 +538,10 @@ export async function withdrawBalance(
     }
 
     // Fence 3: Duplicate guard (same amount awaiting approval/transfer within 30 min)
-    // → almost certainly a double-tap mistake
     const DUPLICATE_WINDOW_MS = 30 * 60 * 1000;
     const dup = await tx.settlementPayout.findFirst({
       where: {
         businessId,
-        // Match on the STORED amount (quote.amount), not the raw request.
-        // In platform-bearer mode quote.amount = requested + fee, so matching
-        // params.amount would never hit and double-tap protection would
-        // silently stop working in that mode.
         amount: quote.amount,
         status: { in: ['pending', 'processing'] },
         createdAt: { gte: new Date(Date.now() - DUPLICATE_WINDOW_MS) },
@@ -555,95 +551,234 @@ export async function withdrawBalance(
     if (dup) {
       throw new AppError(
         409,
-        'You already have a withdrawal request for this exact amount that is awaiting approval. Check its status or wait for it to be processed before requesting again.',
+        'You already have a withdrawal request for this exact amount that is awaiting approval or processing.',
         'DUPLICATE_WITHDRAWAL_REQUEST',
         { existingRequestId: dup.id, existingReference: dup.transferReference }
       );
     }
 
-    // Ledger-first: the pending row IS the reservation (awaiting admin approval)
-    // No Paystack call — transfer happens on admin approval (adminApproveWithdrawal)
-     // amount   = what leaves the platform-held balance
-    // fee      = what Paystack keeps (banded transfer fee + ₦50 stamp duty)
-    // netAmount = what the SME's bank account is credited with
+    // Ledger-first: the pending/processing row IS the reservation
     return tx.settlementPayout.create({
       data: {
         businessId,
         amount: quote.amount,
         fee: quote.fee,
         netAmount: quote.netAmount,
-        destinationBankCode: business.settlementBankCode,
+        destinationBankCode: business.settlementBankCode!,
         destinationBankName: business.settlementBankName || 'Commercial Bank',
-        destinationAccountNum: business.settlementAccountNumber,
+        destinationAccountNum: business.settlementAccountNumber!,
         destinationAccountName: business.settlementAccountName || business.businessName,
         transferReference,
-        status: 'pending', // = awaiting admin approval
+        status: initialStatus,
         narration: params.narration,
       },
     });
   }, { maxWait: 10000, timeout: 20000 });
 
-  // Audit log (fire-and-forget, outside tx)
-  logAudit({
-    userId,
-    businessId,
-    action: 'settlement.payout_requested',
-    resourceType: 'settlement_payout',
-    resourceId: payout.id,
-    newData: {
+  // PATH A: Manual Admin Review (autoPayoutEnabled === false)
+  if (!isAutoPayout) {
+    logAudit({
+      userId,
+      businessId,
+      action: 'settlement.payout_requested',
+      resourceType: 'settlement_payout',
+      resourceId: payout.id,
+      newData: {
+        amount: quote.amount,
+        fee: quote.fee,
+        netAmount: quote.netAmount,
+        transferReference,
+        destinationBank: business.settlementBankName,
+        accountLast4: business.settlementAccountNumber.slice(-4),
+        mode: 'manual_approval',
+      },
+    });
+
+    logger.info('Withdrawal request submitted (awaiting admin approval)', {
+      businessId,
+      payoutId: payout.id,
       amount: quote.amount,
       fee: quote.fee,
       netAmount: quote.netAmount,
-      transferReference,
-      destinationBank: business.settlementBankName,
-      accountLast4: business.settlementAccountNumber.slice(-4),
-    },
-  });
+      reference: transferReference,
+    });
 
-  logger.info('Withdrawal request submitted (awaiting admin approval)', {
-    businessId,
-    payoutId: payout.id,
-     amount: quote.amount,
-    fee: quote.fee,
-    netAmount: quote.netAmount,
-    reference: transferReference,
-  });
+    void createReminderOnce({
+      businessId,
+      reminderType: 'payout_requested',
+      scheduledDate: new Date(),
+      message: `Withdrawal request of ${formatNaira(quote.netAmount)}${
+        quote.fee > 0 ? ` (after ${formatNaira(quote.fee)} fee)` : ''
+      } received (ref ${transferReference}). We'll notify you once it's reviewed — usually within 1–2 business hours.`,
+      referenceType: 'settlement_payout',
+      referenceId: payout.id,
+    }).catch((err) =>
+      logger.warn('Failed to create payout_requested reminder', {
+        payoutId: payout.id,
+        err: err instanceof Error ? err.message : err,
+      })
+    );
 
-  void createReminderOnce({
-    businessId,
-    reminderType: 'payout_requested',
-    scheduledDate: new Date(),
-     message: `Withdrawal request of ${formatNaira(quote.netAmount)}${
-      quote.fee > 0 ? ` (after Paystack's ${formatNaira(quote.fee)} fee)` : ''
-    } received (ref ${transferReference}). We'll notify you once it's reviewed — usually within 1–2 business hours.`,
-    referenceType: 'settlement_payout',
-    referenceId: payout.id,
-  }).catch((err) =>
-    logger.warn('Failed to create payout_requested reminder', {
+    return {
+      id: payout.id,
+      amount: toNumber(payout.amount),
+      fee: toNumber(payout.fee),
+      netAmount: toNumber(payout.netAmount),
+      transferReference: payout.transferReference,
+      status: payout.status,
+      destinationBankName: payout.destinationBankName,
+      destinationAccountNum: payout.destinationAccountNum,
+      destinationAccountName: payout.destinationAccountName,
+      initiatedAt: payout.initiatedAt,
+      completedAt: payout.completedAt,
+      message:
+        toNumber(payout.fee) > 0
+          ? `Withdrawal request for ${formatNaira(toNumber(payout.netAmount))} submitted (fee ${formatNaira(
+              toNumber(payout.fee)
+            )}). It will be processed once approved by an admin.`
+          : 'Withdrawal request submitted. It will be processed once approved by an admin.',
+    };
+  }
+
+  // PATH B: Instant Payout (autoPayoutEnabled === true)
+  const provider = getPaymentProvider();
+  try {
+    const recipient = await provider.createTransferRecipient({
+      type: 'nuban',
+      name: payout.destinationAccountName,
+      accountNumber: payout.destinationAccountNum,
+      bankCode: payout.destinationBankCode,
+      currency: 'NGN',
+      description: `Auto-payout for ${business.businessName}`,
+    });
+
+    const transferAmount =
+      toNumber(payout.netAmount) > 0 ? toNumber(payout.netAmount) : toNumber(payout.amount);
+
+    const transferResult = await provider.initiateTransfer({
+      source: 'balance',
+      amount: transferAmount,
+      recipient: recipient.recipientCode,
+      reason: payout.narration || `Payout for ${business.businessName}`,
+      reference: payout.transferReference,
+    });
+
+    const isComplete =
+      transferResult.status === 'success' || transferResult.status === 'completed';
+
+    const updated = await prisma.settlementPayout.update({
+      where: { id: payout.id },
+      data: {
+        paystackTransferCode: transferResult.transferCode,
+        ...(isComplete ? { status: 'completed', completedAt: new Date() } : {}),
+        adminApprovedBy: 'SYSTEM_AUTO_PAYOUT',
+        adminApprovedAt: new Date(),
+      },
+    });
+
+    logAudit({
+      userId,
+      businessId,
+      action: 'settlement.auto_payout_executed',
+      resourceType: 'settlement_payout',
+      resourceId: payout.id,
+      newData: {
+        amount: quote.amount,
+        fee: quote.fee,
+        netAmount: quote.netAmount,
+        transferredToBank: transferAmount,
+        transferReference: payout.transferReference,
+        paystackTransferCode: transferResult.transferCode,
+      },
+    });
+
+    logger.info('Auto-payout executed and transfer initiated', {
       payoutId: payout.id,
-      err: err instanceof Error ? err.message : err,
-    })
-  );
+      businessId,
+      amount: quote.amount,
+      fee: quote.fee,
+      transferredToBank: transferAmount,
+      reference: payout.transferReference,
+    });
 
-  return {
-    id: payout.id,
-    amount: toNumber(payout.amount),
-    fee: toNumber(payout.fee),
-    netAmount: toNumber(payout.netAmount),
-    transferReference: payout.transferReference,
-    status: payout.status, // 'pending'
-    destinationBankName: payout.destinationBankName,
-    destinationAccountNum: payout.destinationAccountNum,
-    destinationAccountName: payout.destinationAccountName,
-    initiatedAt: payout.initiatedAt,
-    completedAt: payout.completedAt,
-     message:
-      toNumber(payout.fee) > 0
-        ? `Withdrawal request for ${formatNaira(toNumber(payout.netAmount))} submitted (Paystack fee ${formatNaira(
-            toNumber(payout.fee)
-          )}). It will be processed once approved by an admin.`
-        : 'Withdrawal request submitted. It will be processed once approved by an admin.',
-  };
+    void createReminderOnce({
+      businessId,
+      reminderType: 'payout_approved',
+      scheduledDate: new Date(),
+      message: `Your withdrawal of ${formatNaira(transferAmount)} (ref ${payout.transferReference}) has been processed${
+        toNumber(payout.fee) > 0 ? ` (fee ${formatNaira(toNumber(payout.fee))})` : ''
+      }. The transfer to your ${payout.destinationBankName} account ••••${payout.destinationAccountNum.slice(-4)} is in progress.`,
+      referenceType: 'settlement_payout',
+      referenceId: payout.id,
+    }).catch((remErr) =>
+      logger.warn('Failed to create payout_approved reminder for auto-payout', {
+        payoutId: payout.id,
+        err: remErr instanceof Error ? remErr.message : remErr,
+      })
+    );
+
+    return {
+      id: updated.id,
+      amount: toNumber(updated.amount),
+      fee: toNumber(updated.fee),
+      netAmount: toNumber(updated.netAmount),
+      transferReference: updated.transferReference,
+      status: updated.status,
+      destinationBankName: updated.destinationBankName,
+      destinationAccountNum: updated.destinationAccountNum,
+      destinationAccountName: updated.destinationAccountName,
+      initiatedAt: updated.initiatedAt,
+      completedAt: updated.completedAt,
+      message: `Withdrawal of ${formatNaira(transferAmount)} successfully initiated to your bank account.`,
+    };
+  } catch (err) {
+    try {
+      await prisma.settlementPayout.update({
+        where: { id: payout.id },
+        data: {
+          status: 'failed',
+          failureReason: err instanceof Error ? err.message : String(err),
+        },
+      });
+
+      logAudit({
+        userId,
+        businessId,
+        action: 'settlement.auto_payout_failed',
+        resourceType: 'settlement_payout',
+        resourceId: payout.id,
+        newData: {
+          transferReference: payout.transferReference,
+          reason: err instanceof Error ? err.message : String(err),
+        },
+      });
+
+      void createReminderOnce({
+        businessId,
+        reminderType: 'payout_failed',
+        scheduledDate: new Date(),
+        message: `The transfer for your withdrawal of ${formatNaira(quote.amount)} could not be processed; the amount is back in your available balance. Support has been notified.`,
+        referenceType: 'settlement_payout',
+        referenceId: payout.id,
+      }).catch((remErr) =>
+        logger.warn('Failed to create payout_failed reminder on auto-payout error', {
+          payoutId: payout.id,
+          err: remErr instanceof Error ? remErr.message : remErr,
+        })
+      );
+    } catch (markErr) {
+      logger.error('Failed to mark auto-payout failed after transfer error', {
+        payoutId: payout.id,
+        error: markErr instanceof Error ? markErr.message : String(markErr),
+      });
+    }
+
+    throw new AppError(
+      502,
+      `Transfer failed: ${err instanceof Error ? err.message : 'Gateway error'}. Your balance has been restored.`,
+      'TRANSFER_FAILED'
+    );
+  }
 }
 
 /**
@@ -844,6 +979,7 @@ export async function adminListWithdrawalRequests(query: {
             id: true,
             businessName: true,
             merchantId: true,
+            autoPayoutEnabled: true,
             user: {
               select: { id: true, email: true },
             },
@@ -868,6 +1004,7 @@ export async function adminListWithdrawalRequests(query: {
         businessId: p.businessId,
         businessName: p.business.businessName,
         merchantId: p.business.merchantId,
+        autoPayoutEnabled: p.business.autoPayoutEnabled,
         userEmail: p.business.user.email,
         amount: toNumber(p.amount),
         fee: toNumber(p.fee),
@@ -880,6 +1017,8 @@ export async function adminListWithdrawalRequests(query: {
         isStale,
         narration: p.narration,
         failureReason: p.failureReason,
+        adminApprovedBy: p.adminApprovedBy,
+        adminApprovedAt: p.adminApprovedAt,
         initiatedAt: p.initiatedAt,
         completedAt: p.completedAt,
         createdAt: p.createdAt,
@@ -1011,6 +1150,8 @@ export async function adminApproveWithdrawal(adminUserId: string, payoutId: stri
       data: {
         paystackTransferCode: transferResult.transferCode,
         ...(isComplete ? { status: 'completed', completedAt: new Date() } : {}),
+        adminApprovedBy: adminUserId,
+        adminApprovedAt: new Date(),
       },
     });
 
@@ -1246,3 +1387,66 @@ export async function adminRequeryWithdrawal(adminUserId: string, payoutId: stri
     throw new AppError(502, `Failed to verify transfer with Paystack: ${err.message}`, 'PAYSTACK_REQUERY_FAILED');
   }
 }
+
+/**
+ * Admin: Toggles whether a business's withdrawal requests execute automatically (instant payout)
+ * or require manual admin approval (pending review).
+ */
+export async function adminToggleAutoPayout(
+  adminUserId: string,
+  businessId: string,
+  enabled: boolean
+) {
+  const business = await prisma.business.findUnique({
+    where: { id: businessId },
+    select: {
+      id: true,
+      businessName: true,
+      autoPayoutEnabled: true,
+      settlementAccountNumber: true,
+      settlementBankCode: true,
+    },
+  });
+
+  if (!business) {
+    throw new AppError(404, 'Business not found', 'BUSINESS_NOT_FOUND');
+  }
+
+  if (enabled && (!business.settlementAccountNumber || !business.settlementBankCode)) {
+    throw new AppError(
+      400,
+      'Cannot enable auto-payout for a business without a connected settlement bank account',
+      'SETTLEMENT_ACCOUNT_REQUIRED'
+    );
+  }
+
+  const updated = await prisma.business.update({
+    where: { id: businessId },
+    data: { autoPayoutEnabled: enabled },
+    select: {
+      id: true,
+      businessName: true,
+      autoPayoutEnabled: true,
+    },
+  });
+
+  logAudit({
+    userId: adminUserId,
+    businessId,
+    action: 'admin.business_auto_payout_toggled',
+    resourceType: 'business',
+    resourceId: businessId,
+    oldData: { autoPayoutEnabled: business.autoPayoutEnabled },
+    newData: { autoPayoutEnabled: enabled },
+  });
+
+  logger.info('Business auto-payout toggled by admin', {
+    businessId,
+    businessName: business.businessName,
+    adminUserId,
+    enabled,
+  });
+
+  return updated;
+}
+

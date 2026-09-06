@@ -5,8 +5,7 @@ generator client {
 datasource db {
   provider  = "postgresql"
   url       = env("DATABASE_URL")
-  // Optional direct URL for migrations. Defaults to DATABASE_URL if unset.
-  // Only needed for Neon pooled connections; not required for Supabase/Render Postgres.
+  directUrl = env("DIRECT_URL")
 }
 
 /// User accounts - business owners and administrators
@@ -71,6 +70,7 @@ model Business {
   settlementConnectedAt   DateTime? @map("settlement_connected_at")
   autoSplitEnabled        Boolean   @default(false) @map("auto_split_enabled")
   taxSplitPercentage      Decimal   @default(7.50) @map("tax_split_percentage") @db.Decimal(5, 2)
+  autoPayoutEnabled       Boolean   @default(false) @map("auto_payout_enabled")
   // Set when Paystack sends `customeridentification.failed` or
   // `dedicatedaccount.assign.failed`. Lets the frontend stop polling
   // immediately with an actionable reason instead of spinning until a
@@ -154,6 +154,7 @@ model SalesTransaction {
   invoice             Invoice?
   business            Business                   @relation(fields: [businessId], references: [id], onDelete: Cascade)
   classification      TransactionClassification? @relation(fields: [classificationId], references: [id], onDelete: SetNull)
+  items               SaleLineItem[]
 
   @@unique([businessId, source, referenceId], name: "unique_sales_reference")
   @@index([businessId, transactionDate(sort: Desc)])
@@ -172,6 +173,8 @@ model Expense {
   category     ExpenseCategory
   description  String
   amount       Decimal         @db.Decimal(15, 2)
+  quantity     Decimal         @default(1) @db.Decimal(12, 2)
+  unitPrice    Decimal?        @map("unit_price") @db.Decimal(15, 2)
   expenseDate  DateTime        @map("expense_date") @db.Date
   receiptUrl   String?         @map("receipt_url")
   isDeductible Boolean         @default(true) @map("is_deductible")
@@ -185,6 +188,22 @@ model Expense {
   @@index([businessId, isDeductible])
   @@index([businessId, isDeductible, expenseDate], map: "idx_expense_tax_calc")
   @@map("expenses")
+}
+
+/// Sale Line Items - individual items within a basket sale
+model SaleLineItem {
+  id        String           @id @default(uuid())
+  saleId    String           @map("sale_id")
+  name      String           @db.VarChar(200)
+  quantity  Decimal          @default(1) @db.Decimal(12, 2)
+  unitPrice Decimal          @map("unit_price") @db.Decimal(15, 2)
+  lineTotal Decimal          @map("line_total") @db.Decimal(15, 2)
+  sortOrder Int              @default(0) @map("sort_order")
+  createdAt DateTime         @default(now()) @map("created_at")
+  sale      SalesTransaction @relation(fields: [saleId], references: [id], onDelete: Cascade)
+
+  @@index([saleId, sortOrder])
+  @@map("sale_line_items")
 }
 
 /// Monthly tax reports - calculated tax obligations
@@ -589,6 +608,8 @@ model SettlementPayout {
   completedAt           DateTime?     @map("completed_at")
   failureReason         String?       @map("failure_reason")
   narration             String?
+  adminApprovedBy       String?       @map("admin_approved_by")
+  adminApprovedAt       DateTime?     @map("admin_approved_at")
   createdAt             DateTime      @default(now()) @map("created_at")
   updatedAt             DateTime      @updatedAt @map("updated_at")
   business              Business      @relation(fields: [businessId], references: [id], onDelete: Cascade)

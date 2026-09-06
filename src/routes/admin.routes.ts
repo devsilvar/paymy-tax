@@ -20,6 +20,9 @@ router.get('/audit-logs', adminController.listAuditLogs);
 router.post('/businesses/:businessId/payout-change-permit', adminController.grantPayoutChangePermission);
 router.delete('/businesses/:businessId/payout-change-permit', adminController.revokePayoutChangePermission);
 
+// Auto-payout power gate toggle
+router.patch('/businesses/:businessId/auto-payout', adminController.toggleBusinessAutoPayout);
+
 // Withdrawal request management (NEW-7 v2: admin-approved withdrawal workflow)
 router.get('/settlement/withdrawals', adminController.listWithdrawalRequests);
 router.post('/settlement/withdrawals/:id/approve', adminController.approveWithdrawalRequest);

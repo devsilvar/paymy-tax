@@ -59,12 +59,17 @@ export async function createExpense(
   await verifyBusinessOwnership(userId, businessId, db);
   await assertMonthNotLocked(businessId, input.expenseDate, db);
 
+  const quantity = input.quantity ?? 1;
+  const unitPrice = Math.round((input.amount / quantity) * 100) / 100;
+
   const expense = await db.expense.create({
     data: {
       businessId,
       category: input.category,
       description: input.description,
       amount: input.amount,
+      quantity,
+      unitPrice,
       expenseDate: input.expenseDate,
       receiptUrl: input.receiptUrl,
       isDeductible: input.isDeductible ?? true,
@@ -78,7 +83,13 @@ export async function createExpense(
     action: 'expense.created',
     resourceType: 'expense',
     resourceId: expense.id,
-    newData: { amount: input.amount, category: input.category, isDeductible: expense.isDeductible },
+    newData: {
+      amount: input.amount,
+      quantity,
+      unitPrice,
+      category: input.category,
+      isDeductible: expense.isDeductible,
+    },
   }, tx);
 
   logger.info('Expense created', { expenseId: expense.id, businessId, userId });
@@ -181,10 +192,17 @@ export async function updateExpense(
     await assertMonthNotLocked(businessId, input.expenseDate, db);
   }
 
+  const effectiveAmount = input.amount !== undefined ? input.amount : Number(existing.amount);
+  const effectiveQuantity = input.quantity !== undefined ? input.quantity : Number(existing.quantity ?? 1);
+
   const data: Record<string, any> = {};
   if (input.category !== undefined) data.category = input.category;
   if (input.description !== undefined) data.description = input.description;
   if (input.amount !== undefined) data.amount = input.amount;
+  if (input.quantity !== undefined) data.quantity = input.quantity;
+  if (input.amount !== undefined || input.quantity !== undefined) {
+    data.unitPrice = Math.round((effectiveAmount / effectiveQuantity) * 100) / 100;
+  }
   if (input.expenseDate !== undefined) data.expenseDate = input.expenseDate;
   if (input.receiptUrl !== undefined) data.receiptUrl = input.receiptUrl;
   if (input.isDeductible !== undefined) data.isDeductible = input.isDeductible;
@@ -200,8 +218,17 @@ export async function updateExpense(
     action: 'expense.updated',
     resourceType: 'expense',
     resourceId: expenseId,
-    oldData: { amount: Number(existing.amount), category: existing.category, isDeductible: existing.isDeductible },
-    newData: input as Record<string, any>,
+    oldData: {
+      amount: Number(existing.amount),
+      quantity: Number(existing.quantity ?? 1),
+      unitPrice: existing.unitPrice ? Number(existing.unitPrice) : null,
+      category: existing.category,
+      isDeductible: existing.isDeductible,
+    },
+    newData: {
+      ...input,
+      ...(data.unitPrice !== undefined ? { unitPrice: data.unitPrice } : {}),
+    } as Record<string, any>,
   }, tx);
 
   logger.info('Expense updated', { expenseId, businessId, userId });
@@ -303,6 +330,8 @@ export async function getDailySummary(
       select: {
         id: true,
         amount: true,
+        quantity: true,
+        unitPrice: true,
         category: true,
         description: true,
         expenseDate: true,

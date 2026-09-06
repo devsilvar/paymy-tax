@@ -27,7 +27,7 @@ export const withdrawBalanceSchema = z
     amount: z
       .number()
       .positive('Withdrawal amount must be greater than zero')
-      .min(100, 'Minimum withdrawal amount is ₦100.00'),
+      .min(1000, 'Minimum withdrawal amount is ₦1,000.00'),
     pin: z
       .string()
       .regex(/^\d{4}$/, 'Transaction PIN must be exactly 4 digits')

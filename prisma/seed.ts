@@ -184,7 +184,29 @@ async function main() {
     });
   }
 
-  console.log(`✅ Created ${salesData.length} sales transactions\n`);
+  // Sample Basket sale with line items
+  await prisma.salesTransaction.create({
+    data: {
+      businessId: business1.id,
+      amount: 12500,
+      source: 'pos',
+      status: 'confirmed',
+      description: 'Counter sale — 3 items',
+      transactionDate: new Date('2026-03-24'),
+      createdBy: testUser1.id,
+      items: {
+        createMany: {
+          data: [
+            { name: 'Rice 5kg bag', quantity: 2, unitPrice: 3500, lineTotal: 7000, sortOrder: 0 },
+            { name: 'Vegetable Oil 1L', quantity: 1, unitPrice: 4000, lineTotal: 4000, sortOrder: 1 },
+            { name: 'Seasoning cubes pack', quantity: 3, unitPrice: 500, lineTotal: 1500, sortOrder: 2 },
+          ],
+        },
+      },
+    },
+  });
+
+  console.log(`✅ Created ${salesData.length + 1} sales transactions (including basket sale)\n`);
 
   // =================================
   // 4. CREATE SAMPLE EXPENSES
@@ -194,6 +216,7 @@ async function main() {
   const expensesData = [
     { category: 'rent', description: 'Shop rent - March', amount: 50000, date: new Date('2026-03-01') },
     { category: 'inventory', description: 'Stock purchase', amount: 200000, date: new Date('2026-03-05') },
+    { category: 'inventory', description: '12 crates of eggs', amount: 42000, quantity: 12, unitPrice: 3500, date: new Date('2026-03-08') },
     { category: 'utility', description: 'Electricity bill', amount: 15000, date: new Date('2026-03-07') },
     { category: 'salary', description: 'Staff salaries', amount: 80000, date: new Date('2026-03-15') },
     { category: 'fuel', description: 'Generator fuel', amount: 10000, date: new Date('2026-03-12') },
@@ -207,6 +230,8 @@ async function main() {
         category: expense.category as any,
         description: expense.description,
         amount: expense.amount,
+        quantity: (expense as any).quantity ?? 1,
+        unitPrice: (expense as any).unitPrice ?? expense.amount,
         expenseDate: expense.date,
         createdBy: testUser1.id,
       },

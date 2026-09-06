@@ -146,6 +146,21 @@ export interface WithdrawalQuote {
  *
  * @throws when the requested amount is too small to cover the fee at all.
  */
+export const MIN_WITHDRAWAL_AMOUNT = 1000.00;
+export const WALLX_WITHDRAWAL_PCT = 1.0; // 1%
+export const WALLX_WITHDRAWAL_CAP = 300.00; // ₦300 cap
+
+export function wallxWithdrawalFee(amountNaira: number): number {
+  const amount = Number(amountNaira);
+  if (!Number.isFinite(amount) || amount <= 0) return 0;
+  return round2(Math.min((amount * WALLX_WITHDRAWAL_PCT) / 100, WALLX_WITHDRAWAL_CAP));
+}
+
+/**
+ * Prices a withdrawal with WallX 1% fee capped at ₦300.
+ *
+ * @throws when the requested amount is below the ₦1,000 floor.
+ */
 export function quoteWithdrawal(requestedNaira: number): WithdrawalQuote {
   const bearer = withdrawalFeeBearer();
   const requested = round2(Number(requestedNaira) || 0);
@@ -154,8 +169,15 @@ export function quoteWithdrawal(requestedNaira: number): WithdrawalQuote {
     return { requested: 0, amount: 0, fee: 0, netAmount: 0, paystackAmount: 0, bearer };
   }
 
+  if (requested < MIN_WITHDRAWAL_AMOUNT) {
+    throw new Error(
+      `Minimum withdrawal amount is ₦${MIN_WITHDRAWAL_AMOUNT.toLocaleString('en-NG', { minimumFractionDigits: 2 })}`
+    );
+  }
+
+  const fee = wallxWithdrawalFee(requested);
+
   if (bearer === 'platform') {
-    const fee = withdrawalCost(requested);
     return {
       requested,
       amount: round2(requested + fee),
@@ -166,33 +188,8 @@ export function quoteWithdrawal(requestedNaira: number): WithdrawalQuote {
     };
   }
 
-  // The banded fee has a floor, so a request smaller than that floor can never
-  // be priced — reject it instead of looping between bands forever.
-  const floorFee = withdrawalCost(requested);
-  if (floorFee >= requested) {
-    throw new Error(
-      `Amount too small to cover Paystack's ₦${floorFee.toFixed(2)} withdrawal cost`
-    );
-  }
-
-  let net = requested;
-  let fee = floorFee;
-  for (let i = 0; i < 8; i += 1) {
-    const nextNet = round2(requested - fee);
-    const nextFee = withdrawalCost(nextNet);
-    if (nextNet === net && nextFee === fee) break;
-    net = nextNet;
-    fee = nextFee;
-  }
-
-  // Never hand back a quote whose parts do not add up — the ledger and
-  // Paystack's balance would drift apart by whatever the rounding gap is.
-  if (round2(net + withdrawalCost(net)) !== requested) {
-    throw new Error(
-      `Could not price a ₦${requested.toFixed(2)} withdrawal against the current fee bands`
-    );
-  }
-
+  // Merchant bearer (default): fee is deducted from the requested amount
+  const net = round2(requested - fee);
   return { requested, amount: requested, fee, netAmount: net, paystackAmount: net, bearer };
 }
 
@@ -204,6 +201,7 @@ export function feeSchedule() {
   const f = fees();
   return {
     currency: 'NGN',
+    minWithdrawal: MIN_WITHDRAWAL_AMOUNT,
     dvaInflow: {
       pct: f.dvaPct,
       cap: f.dvaCap,
@@ -213,6 +211,9 @@ export function feeSchedule() {
     },
     withdrawal: {
       bearer: withdrawalFeeBearer(),
+      ratePct: WALLX_WITHDRAWAL_PCT,
+      cap: WALLX_WITHDRAWAL_CAP,
+      minAmount: MIN_WITHDRAWAL_AMOUNT,
       bands: [
         { upTo: f.transferLowMax, fee: f.transferLow },
         { upTo: f.transferMidMax, fee: f.transferMid },
@@ -220,7 +221,7 @@ export function feeSchedule() {
       ],
       stampDuty: { amount: f.stampDuty, from: f.stampDutyFrom },
       note:
-        'Paystack debits the transfer fee plus stamp duty from the platform balance, on top of the amount transferred.',
+        'WallX charges 1% capped at ₦300.00 per withdrawal.',
     },
   };
 }

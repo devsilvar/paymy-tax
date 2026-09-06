@@ -212,3 +212,32 @@ export const requeryWithdrawalRequest = asyncHandler(
     });
   }
 );
+
+export const toggleBusinessAutoPayout = asyncHandler(
+  async (req: AuthenticatedRequest, res: Response) => {
+    const { businessId } = req.params;
+    const { enabled } = req.body;
+
+    if (typeof enabled !== 'boolean') {
+      return res.status(400).json({
+        success: false,
+        error: {
+          code: 'VALIDATION_ERROR',
+          message: '"enabled" boolean field is required',
+        },
+      });
+    }
+
+    const result = await settlementService.adminToggleAutoPayout(
+      req.user!.userId,
+      businessId,
+      enabled
+    );
+
+    res.status(200).json({
+      success: true,
+      data: result,
+      message: `Auto-payout ${enabled ? 'enabled' : 'disabled'} for business.`,
+    });
+  }
+);

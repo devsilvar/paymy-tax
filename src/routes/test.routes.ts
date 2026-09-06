@@ -129,4 +129,102 @@ router.get('/check-classifications', asyncHandler(async (req: Request, res: Resp
   });
 }));
 
+/**
+ * Trigger an instant Paystack transfer to any bank account (OPay, etc.)
+ * 
+ * POST /api/v1/test/trigger-transfer
+ * Body: {
+ *   amount?: number (default: 740),
+ *   accountNumber?: string (default: 8148434507),
+ *   bankCode?: string (default: 999992 - OPay),
+ *   reason?: string,
+ *   secretKey?: string (optional live key override)
+ * }
+ */
+router.post('/trigger-transfer', asyncHandler(async (req: Request, res: Response) => {
+  const amount = Number(req.body.amount || 740);
+  const accountNumber = String(req.body.accountNumber || '8148434507');
+  const bankCode = String(req.body.bankCode || '999992');
+  const reason = String(req.body.reason || 'PayMyTax Settlement Transfer');
+  const secretKey = req.body.secretKey || process.env.PAYSTACK_SECRET_KEY;
+
+  if (!secretKey) {
+    throw new AppError(500, 'Paystack secret key not configured', 'CONFIG_ERROR');
+  }
+
+  // 1. Resolve Account Name
+  let recipientName = 'Beneficiary';
+  try {
+    const resolveRes = await fetch(
+      `https://api.paystack.co/bank/resolve?account_number=${accountNumber}&bank_code=${bankCode}`,
+      {
+        headers: { Authorization: `Bearer ${secretKey}` },
+      }
+    );
+    const resolveJson: any = await resolveRes.json();
+    if (resolveJson.status && resolveJson.data?.account_name) {
+      recipientName = resolveJson.data.account_name;
+    }
+  } catch {
+    // Non-blocking fallback
+  }
+
+  // 2. Create Transfer Recipient
+  const recipientRes = await fetch('https://api.paystack.co/transferrecipient', {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${secretKey}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      type: 'nuban',
+      name: recipientName,
+      account_number: accountNumber,
+      bank_code: bankCode,
+      currency: 'NGN',
+      description: `Payout to ${recipientName}`,
+    }),
+  });
+  const recipientJson: any = await recipientRes.json();
+  if (!recipientJson.status) {
+    throw new AppError(400, recipientJson.message || 'Failed to create transfer recipient', 'RECIPIENT_FAILED');
+  }
+  const recipientCode = recipientJson.data.recipient_code;
+
+  // 3. Initiate Transfer
+  const reference = `PMT-TRF-${Date.now()}-${Math.random().toString(36).substring(2, 7).toUpperCase()}`;
+  const transferRes = await fetch('https://api.paystack.co/transfer', {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${secretKey}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      source: 'balance',
+      amount: Math.round(amount * 100),
+      recipient: recipientCode,
+      reason,
+      reference,
+    }),
+  });
+  const transferJson: any = await transferRes.json();
+  if (!transferJson.status) {
+    throw new AppError(400, transferJson.message || 'Failed to initiate transfer', 'TRANSFER_FAILED');
+  }
+
+  res.status(200).json({
+    success: true,
+    message: 'Transfer initiated successfully via Paystack',
+    data: {
+      amount,
+      recipientName,
+      accountNumber,
+      bankCode,
+      reference,
+      transferCode: transferJson.data.transfer_code,
+      status: transferJson.data.status,
+    },
+  });
+}));
+
 export default router;
