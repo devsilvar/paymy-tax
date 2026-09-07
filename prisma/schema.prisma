@@ -35,6 +35,20 @@ model User {
   pinLockedUntil      DateTime?  @map("pin_locked_until")
   pinAttemptsResetAt  DateTime?  @map("pin_attempts_reset_at")
   pinSetAt            DateTime?  @map("pin_set_at")
+
+  // Central Commercial Settlement Bank (Outflow)
+  settlementBankCode      String?   @map("settlement_bank_code")
+  settlementBankName      String?   @map("settlement_bank_name")
+  settlementAccountNumber String?   @map("settlement_account_number")
+  settlementAccountName   String?   @map("settlement_account_name")
+  settlementConnectedAt   DateTime? @map("settlement_connected_at")
+
+  // Central Dedicated Virtual Account (Inflow)
+  paystackCustomerCode    String?   @map("paystack_customer_code")
+  virtualAccountNumber    String?   @map("virtual_account_number")
+  virtualAccountBank      String?   @map("virtual_account_bank")
+  primaryBusinessId       String?   @map("primary_business_id")
+
   auditLogs           AuditLog[]
   businesses          Business[]
   sessions            Session[]

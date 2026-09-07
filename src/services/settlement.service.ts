@@ -42,6 +42,15 @@ async function verifyBusinessOwnership(userId: string, businessId: string) {
           transactionPin: true,
           pinLockedUntil: true,
           pinAttempts: true,
+          settlementBankCode: true,
+          settlementBankName: true,
+          settlementAccountNumber: true,
+          settlementAccountName: true,
+          settlementConnectedAt: true,
+          virtualAccountNumber: true,
+          virtualAccountBank: true,
+          paystackCustomerCode: true,
+          primaryBusinessId: true,
         },
       },
     },
@@ -76,9 +85,15 @@ export async function getPayoutPreview(
 
   // 1. DVA Inflows breakdown:
   // DVA-originated inflows only — matches getDVABalance (dva.service.ts:363-367).
-  // Manually-entered bank transfers never touched the platform balance and
-  // MUST NOT be withdrawable. (noticepay.md NEW-B & NEW-K)
-  
+  // Centralized Banking: Because the DVA and Paystack balance are centralized at the User level
+  // (1 human = 1 BVN = 1 DVA), total withdrawable wallet funds reflect the user's pooled DVA
+  // balance across all their businesses, while sales and tax remain strictly compartmentalized.
+  const userBizRecords = await db.business.findMany({
+    where: { userId },
+    select: { id: true },
+  });
+  const userBizIds = userBizRecords.length > 0 ? userBizRecords.map((b) => b.id) : [businessId];
+
   // Platform-held share of split-settled inflows.
   // Settled-status rule: DVA inflows are created 'pending' and flipped to
   // 'confirmed' on verification — they are NEVER 'completed'. Counting only
@@ -86,7 +101,7 @@ export async function getPayoutPreview(
   // 'completed' kept for legacy rows. Matches getDVABalance + e2e test NEW-B.
   const splitAgg = await db.salesTransaction.aggregate({
     where: {
-      businessId,
+      businessId: { in: userBizIds },
       source: 'bank_transfer',
       status: { in: ['confirmed', 'completed'] },
       metadata: { path: ['channel'], equals: 'dva' },
@@ -101,7 +116,7 @@ export async function getPayoutPreview(
   // Plain (non-split) inflows count in full — same settled-status rule.
   const plainAgg = await db.salesTransaction.aggregate({
     where: {
-      businessId,
+      businessId: { in: userBizIds },
       source: 'bank_transfer',
       status: { in: ['confirmed', 'completed'] },
       metadata: { path: ['channel'], equals: 'dva' },
@@ -113,10 +128,10 @@ export async function getPayoutPreview(
   });
   const totalPlainInflows = toNumber(plainAgg._sum.amount ?? 0);
 
-  // ALL settled DVA inflows — display + tax fallback only (same rule).
+  // ALL settled DVA inflows across user's businesses (for central user vault cash)
   const allAgg = await db.salesTransaction.aggregate({
     where: {
-      businessId,
+      businessId: { in: userBizIds },
       source: 'bank_transfer',
       status: { in: ['confirmed', 'completed'] },
       metadata: { path: ['channel'], equals: 'dva' },
@@ -127,6 +142,20 @@ export async function getPayoutPreview(
   });
   const totalInflowsAll = toNumber(allAgg._sum.amount ?? 0);
   const platformHeldFunds = totalPlainInflows + totalPlatformRetained;
+
+  // Active business's own settled DVA inflows (strictly for this business's ledger & tax)
+  const businessAgg = await db.salesTransaction.aggregate({
+    where: {
+      businessId,
+      source: 'bank_transfer',
+      status: { in: ['confirmed', 'completed'] },
+      metadata: { path: ['channel'], equals: 'dva' },
+    },
+    _sum: {
+      amount: true,
+    },
+  });
+  const businessInflows = toNumber(businessAgg._sum.amount ?? 0);
   // 1b. Processing fees Paystack has ALREADY taken on those inflows.
   // Paystack deducts its DVA charge (1% per transfer, capped at ₦300) before it
   // settles, so the balance we can really transfer out is gross inflows MINUS
@@ -138,7 +167,7 @@ export async function getPayoutPreview(
   const capThreshold = dvaFeeCapThreshold();
   if (Number.isFinite(capThreshold)) {
     const dvaBase: Prisma.SalesTransactionWhereInput = {
-      businessId,
+      businessId: { in: userBizIds },
       source: 'bank_transfer',
       status: { in: ['confirmed', 'completed'] },
       metadata: { path: ['channel'], equals: 'dva' },
@@ -168,10 +197,10 @@ export async function getPayoutPreview(
       dvaFeeTotalFromBuckets(toNumber(splitBelow._sum.platformRetained ?? 0), splitAbove);
   }
 
-  // 2. Total completed / pending / processing withdrawals
+  // 2. Total completed / pending / processing withdrawals across user's businesses
   // processing = transfer initiated (admin-approved), pending = awaiting admin approval
   const payoutsWhere: any = {
-    businessId,
+    businessId: { in: userBizIds },
     status: { in: ['completed', 'pending', 'processing'] },
   };
   // When rechecking affordability at approval time, exclude the payout being approved
@@ -188,6 +217,20 @@ export async function getPayoutPreview(
 
   const [completedAggregate, pendingAggregate] = await Promise.all([
     db.settlementPayout.aggregate({
+      where: { businessId: { in: userBizIds }, status: 'completed' },
+      _sum: { amount: true },
+    }),
+    db.settlementPayout.aggregate({
+      where: { businessId: { in: userBizIds }, status: { in: ['pending', 'processing'] } },
+      _sum: { amount: true },
+    }),
+  ]);
+  const completedWithdrawn = toNumber(completedAggregate._sum.amount ?? 0);
+  const pendingWithdrawn = toNumber(pendingAggregate._sum.amount ?? 0);
+
+  // Active business's own completed/pending withdrawals (strictly for this business's outflow tracking)
+  const [bizCompletedAggregate, bizPendingAggregate] = await Promise.all([
+    db.settlementPayout.aggregate({
       where: { businessId, status: 'completed' },
       _sum: { amount: true },
     }),
@@ -196,8 +239,9 @@ export async function getPayoutPreview(
       _sum: { amount: true },
     }),
   ]);
-  const completedWithdrawn = toNumber(completedAggregate._sum.amount ?? 0);
-  const pendingWithdrawn = toNumber(pendingAggregate._sum.amount ?? 0);
+  const bizCompletedWithdrawn = toNumber(bizCompletedAggregate._sum.amount ?? 0);
+  const bizPendingWithdrawn = toNumber(bizPendingAggregate._sum.amount ?? 0);
+  const bizTotalWithdrawn = bizCompletedWithdrawn + bizPendingWithdrawn;
 
   // 3. Tax Liability calculation (unpaid reports or estimated monthly liability)
   // Check active unpaid monthly reports
@@ -214,14 +258,14 @@ export async function getPayoutPreview(
   }
 
   // If no finalized reports yet, compute 7.5% tax escrow reserve on total sales minus expenses.
-  // Tax fallback MUST use totalInflowsAll because tax is owed on total revenue regardless of split. (NEW-K)
-  if (unpaidReports.length === 0 && totalInflowsAll > 0) {
+  // Tax fallback MUST use businessInflows because tax is owed strictly on this business's revenue.
+  if (unpaidReports.length === 0 && businessInflows > 0) {
     const totalExpensesAgg = await db.expense.aggregate({
       where: { businessId, isDeductible: true },
       _sum: { amount: true },
     });
     const totalExpenses = toNumber(totalExpensesAgg._sum.amount ?? 0);
-    const grossProfit = Math.max(0, totalInflowsAll - totalExpenses);
+    const grossProfit = Math.max(0, businessInflows - totalExpenses);
     estimatedTaxLiability = Math.round(grossProfit * 0.075 * 100) / 100;
   }
 
@@ -266,23 +310,32 @@ export async function getPayoutPreview(
     businessName: business.businessName,
     walletBalance: availableForWithdrawal,
     availableForWithdrawal,
-    totalInflows: totalInflowsAll,
+    totalInflows: businessInflows,
+    businessInflows,
+    pooledInflows: totalInflowsAll,
     totalSplitSettled: Math.max(0, Math.round((totalInflowsAll - platformHeldFunds) * 100) / 100),
-    totalWithdrawn,
-    pendingWithdrawn,
-    completedWithdrawn,
+    totalWithdrawn: bizTotalWithdrawn,
+    businessWithdrawn: bizTotalWithdrawn,
+    pooledTotalWithdrawn: totalWithdrawn,
+    pendingWithdrawn: bizPendingWithdrawn,
+    pooledPendingWithdrawn: pendingWithdrawn,
+    completedWithdrawn: bizCompletedWithdrawn,
+    pooledCompletedWithdrawn: completedWithdrawn,
      // What Paystack has already deducted from these inflows (1% capped at ₦300
     // per DVA transfer). Already subtracted from availableForWithdrawal.
     estimatedProcessingFees,
     taxReserve,
     fees: feeSchedule(),
     settlementAccount: {
-      isConnected: Boolean(business.settlementAccountNumber && business.settlementBankCode),
-      bankName: business.settlementBankName,
-      bankCode: business.settlementBankCode,
-      accountNumber: business.settlementAccountNumber,
-      accountName: business.settlementAccountName,
-      connectedAt: business.settlementConnectedAt,
+      isConnected: Boolean(
+        (business.settlementAccountNumber || business.user.settlementAccountNumber) &&
+        (business.settlementBankCode || business.user.settlementBankCode)
+      ),
+      bankName: business.settlementBankName || business.user.settlementBankName,
+      bankCode: business.settlementBankCode || business.user.settlementBankCode,
+      accountNumber: business.settlementAccountNumber || business.user.settlementAccountNumber,
+      accountName: business.settlementAccountName || business.user.settlementAccountName,
+      connectedAt: business.settlementConnectedAt || business.user.settlementConnectedAt,
     },
     autoSplit: {
       enabled: business.autoSplitEnabled,
@@ -417,6 +470,20 @@ export async function connectSettlementBank(
     data: updateData,
   });
 
+  // Save to user level if unset, establishing central user settlement account
+  if (!business.user.settlementAccountNumber) {
+    await prisma.user.update({
+      where: { id: userId },
+      data: {
+        settlementBankCode: params.bankCode,
+        settlementBankName: params.bankName,
+        settlementAccountNumber: params.accountNumber,
+        settlementAccountName: accountName,
+        settlementConnectedAt: new Date(),
+      },
+    });
+  }
+
   // 6. Audit log
   logAudit({
     userId,
@@ -461,8 +528,13 @@ export async function withdrawBalance(
 ) {
   const business = await verifyBusinessOwnership(userId, businessId);
 
+  const settlementAccountNumber = business.settlementAccountNumber || business.user.settlementAccountNumber;
+  const settlementBankCode = business.settlementBankCode || business.user.settlementBankCode;
+  const settlementBankName = business.settlementBankName || business.user.settlementBankName;
+  const settlementAccountName = business.settlementAccountName || business.user.settlementAccountName;
+
   // 1. Check if settlement bank account is connected
-  if (!business.settlementAccountNumber || !business.settlementBankCode) {
+  if (!settlementAccountNumber || !settlementBankCode) {
     throw new AppError(
       400,
       'No settlement bank connected. Please connect your commercial bank account first.',
@@ -505,9 +577,9 @@ export async function withdrawBalance(
 
   // 4. Atomic request creation with triple-fence protection
   const payout = await prisma.$transaction(async (tx) => {
-    // Fence 1: Advisory lock (transaction-scoped, serializes per business)
+    // Fence 1: Advisory lock (transaction-scoped, serializes per user to protect central wallet pool)
     const [{ locked }] = await tx.$queryRaw<Array<{ locked: boolean }>>`
-      SELECT pg_try_advisory_xact_lock(hashtextextended(${businessId}::text, 0)) AS locked
+      SELECT pg_try_advisory_xact_lock(hashtextextended(${userId}::text, 0)) AS locked
     `;
     if (!locked) {
       throw new AppError(
@@ -520,15 +592,27 @@ export async function withdrawBalance(
     // Fence 2: Balance check (tx-aware, honest ledger)
     const preview = await getPayoutPreview(userId, businessId, tx);
     if (quote.amount > preview.availableForWithdrawal) {
+      const reservedAmount = preview.pooledPendingWithdrawn ?? preview.pendingWithdrawn ?? 0;
+      const isReserved = reservedAmount > 0;
+      const message = isReserved
+        ? `Insufficient available funds. You have ₦${reservedAmount.toLocaleString('en-NG', {
+            minimumFractionDigits: 2,
+          })} currently reserved in a pending withdrawal awaiting admin approval. Remaining available: ₦${preview.availableForWithdrawal.toLocaleString(
+            'en-NG',
+            { minimumFractionDigits: 2 }
+          )}.`
+        : `Insufficient available funds. Maximum withdrawable balance is ₦${preview.availableForWithdrawal.toLocaleString(
+            'en-NG',
+            { minimumFractionDigits: 2 }
+          )}.`;
+
       throw new AppError(
         400,
-        `Insufficient available funds. Maximum withdrawable balance is ₦${preview.availableForWithdrawal.toLocaleString(
-          'en-NG',
-          { minimumFractionDigits: 2 }
-        )}.`,
+        message,
         'INSUFFICIENT_FUNDS',
         {
           available: preview.availableForWithdrawal,
+          pendingWithdrawn: preview.pendingWithdrawn,
           requested: params.amount,
           required: quote.amount,
           withdrawalFee: quote.fee,
@@ -537,11 +621,17 @@ export async function withdrawBalance(
       );
     }
 
-    // Fence 3: Duplicate guard (same amount awaiting approval/transfer within 30 min)
+    // Fence 3: Duplicate guard (same amount awaiting approval/transfer within 30 min across user's businesses)
     const DUPLICATE_WINDOW_MS = 30 * 60 * 1000;
+    const userBusinesses = await tx.business.findMany({
+      where: { userId },
+      select: { id: true },
+    });
+    const userBizIds = userBusinesses.map((b) => b.id);
+
     const dup = await tx.settlementPayout.findFirst({
       where: {
-        businessId,
+        businessId: { in: userBizIds },
         amount: quote.amount,
         status: { in: ['pending', 'processing'] },
         createdAt: { gte: new Date(Date.now() - DUPLICATE_WINDOW_MS) },
@@ -564,10 +654,10 @@ export async function withdrawBalance(
         amount: quote.amount,
         fee: quote.fee,
         netAmount: quote.netAmount,
-        destinationBankCode: business.settlementBankCode!,
-        destinationBankName: business.settlementBankName || 'Commercial Bank',
-        destinationAccountNum: business.settlementAccountNumber!,
-        destinationAccountName: business.settlementAccountName || business.businessName,
+        destinationBankCode: settlementBankCode,
+        destinationBankName: settlementBankName || 'Commercial Bank',
+        destinationAccountNum: settlementAccountNumber,
+        destinationAccountName: settlementAccountName || business.businessName,
         transferReference,
         status: initialStatus,
         narration: params.narration,
@@ -588,8 +678,8 @@ export async function withdrawBalance(
         fee: quote.fee,
         netAmount: quote.netAmount,
         transferReference,
-        destinationBank: business.settlementBankName,
-        accountLast4: business.settlementAccountNumber.slice(-4),
+        destinationBank: settlementBankName,
+        accountLast4: settlementAccountNumber.slice(-4),
         mode: 'manual_approval',
       },
     });
@@ -1066,14 +1156,14 @@ export async function adminApproveWithdrawal(adminUserId: string, payoutId: stri
 
   // Approval fence: lock + affordability recheck + atomic claim, all in ONE tx
   await prisma.$transaction(async (tx) => {
-    // Fence 1: Advisory lock (serialize approvals per business)
+    // Fence 1: Advisory lock (serialize approvals per user to protect central wallet pool)
     const [{ locked }] = await tx.$queryRaw<Array<{ locked: boolean }>>`
-      SELECT pg_try_advisory_xact_lock(hashtextextended(${businessId}::text, 0)) AS locked
+      SELECT pg_try_advisory_xact_lock(hashtextextended(${payout.business.user.id}::text, 0)) AS locked
     `;
     if (!locked) {
       throw new AppError(
         409,
-        'Another approval for this business is in progress. Please wait a moment and try again.',
+        'Another approval for this account is in progress. Please wait a moment and try again.',
         'WITHDRAWAL_IN_PROGRESS'
       );
     }

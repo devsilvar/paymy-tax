@@ -76,5 +76,6 @@ router.put('/:id', salesController.update);
 router.delete('/:id', salesController.remove);
 router.post('/:id/verify', salesController.verify);
 router.post('/:id/reclassify', salesController.reclassify);
+router.post('/:id/reassign', salesController.reassign);
 
 export default router;

@@ -153,7 +153,7 @@ export const getUnverified = asyncHandler(async (req: AuthenticatedRequest, res:
 });
 
 export const verify = asyncHandler(async (req: AuthenticatedRequest, res: Response) => {
-  const { classification = 'sale', customerName, description } = req.body;
+  const { classification = 'sale', customerName, description, targetBusinessId } = req.body;
 
   const sale = await salesService.verifySale(
     req.user!.userId,
@@ -164,6 +164,7 @@ export const verify = asyncHandler(async (req: AuthenticatedRequest, res: Respon
     {
       customerName: typeof customerName === 'string' ? customerName : undefined,
       description: typeof description === 'string' ? description : undefined,
+      targetBusinessId: typeof targetBusinessId === 'string' ? targetBusinessId : undefined,
     }
   );
 
@@ -175,7 +176,7 @@ export const verify = asyncHandler(async (req: AuthenticatedRequest, res: Respon
 });
 
 export const reclassify = asyncHandler(async (req: AuthenticatedRequest, res: Response) => {
-  const { classification } = req.body;
+  const { classification, targetBusinessId } = req.body;
 
   if (!classification || typeof classification !== 'string') {
     return res.status(400).json({
@@ -188,7 +189,11 @@ export const reclassify = asyncHandler(async (req: AuthenticatedRequest, res: Re
     req.user!.userId,
     req.params.businessId,
     req.params.id,
-    classification
+    classification,
+    undefined,
+    {
+      targetBusinessId: typeof targetBusinessId === 'string' ? targetBusinessId : undefined,
+    }
   );
 
   res.status(200).json({
@@ -197,3 +202,28 @@ export const reclassify = asyncHandler(async (req: AuthenticatedRequest, res: Re
     message: 'Transaction reclassified successfully',
   });
 });
+
+export const reassign = asyncHandler(async (req: AuthenticatedRequest, res: Response) => {
+  const { targetBusinessId } = req.body;
+
+  if (!targetBusinessId || typeof targetBusinessId !== 'string') {
+    return res.status(400).json({
+      success: false,
+      message: 'targetBusinessId is required',
+    });
+  }
+
+  const sale = await salesService.reassignSaleBusiness(
+    req.user!.userId,
+    req.params.businessId,
+    req.params.id,
+    targetBusinessId
+  );
+
+  res.status(200).json({
+    success: true,
+    data: sale,
+    message: 'Sale successfully reassigned to target business',
+  });
+});
+

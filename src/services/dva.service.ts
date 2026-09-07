@@ -7,7 +7,7 @@ import { logAudit } from '@/lib/audit';
 import { getPaymentProvider } from '@/lib/payment';
 import { createReminderOnce } from '@/services/reminder.service';
 import { formatNaira } from '@/lib/format';
-import { verifyBusinessOwnership } from '@/lib/ownership';
+import { verifyBusinessOwnership, invalidateOwnershipCache } from '@/lib/ownership';
 import { dvaProcessingFee, round2 } from '@/lib/paystack-fees';
 
 // ─── Helpers ────────────────────────────────────────────────
@@ -125,14 +125,43 @@ export async function setupVirtualAccount(userId: string, businessId: string) {
     };
   }
 
-  // Get user for email/phone
+  // Get user for email/phone/central DVA
   const user = await prisma.user.findUnique({
     where: { id: userId },
-    select: { email: true, phone: true },
+    select: {
+      email: true,
+      phone: true,
+      virtualAccountNumber: true,
+      virtualAccountBank: true,
+      paystackCustomerCode: true,
+      primaryBusinessId: true,
+    },
   });
 
   if (!user) {
     throw new AppError(404, 'User not found', 'USER_NOT_FOUND');
+  }
+
+  // If user already has a central virtual account, attach it to this business immediately
+  if (user.virtualAccountNumber) {
+    await prisma.business.update({
+      where: { id: businessId },
+      data: {
+        virtualAccountNumber: user.virtualAccountNumber,
+        virtualAccountBank: user.virtualAccountBank,
+        paystackCustomerCode: user.paystackCustomerCode,
+        dvaFailureReason: null,
+        dvaFailedAt: null,
+      },
+    });
+
+    invalidateOwnershipCache(businessId, userId);
+
+    return {
+      status: 'active' as const,
+      accountNumber: user.virtualAccountNumber,
+      bankName: user.virtualAccountBank || 'Wema Bank',
+    };
   }
 
   // Paystack rejects fintech-DVA customer creation when the upstream record
@@ -253,7 +282,6 @@ export async function setupVirtualAccount(userId: string, businessId: string) {
     }
   }
 
-  // If Paystack returned account details synchronously, save them now
   if (dva.accountNumber) {
     await prisma.business.update({
       where: { id: businessId },
@@ -264,6 +292,18 @@ export async function setupVirtualAccount(userId: string, businessId: string) {
         dvaFailedAt: null,
       },
     });
+
+    await prisma.user.update({
+      where: { id: userId },
+      data: {
+        virtualAccountNumber: dva.accountNumber,
+        virtualAccountBank: dva.bankName,
+        paystackCustomerCode: customerCode,
+        primaryBusinessId: businessId,
+      },
+    });
+
+    invalidateOwnershipCache(businessId, userId);
 
     logAudit({
       userId,
@@ -311,6 +351,33 @@ export async function getVirtualAccount(userId: string, businessId: string) {
       status: 'active',
       accountNumber: business.virtualAccountNumber,
       bankName: business.virtualAccountBank || 'Wema Bank',
+      accountName: business.ownerName,
+      businessName: business.businessName,
+    };
+  }
+
+  // Fallback to user central DVA
+  const user = await prisma.user.findUnique({
+    where: { id: userId },
+    select: { virtualAccountNumber: true, virtualAccountBank: true, paystackCustomerCode: true },
+  });
+
+  if (user?.virtualAccountNumber) {
+    // Opportunistically link to business
+    await prisma.business.update({
+      where: { id: businessId },
+      data: {
+        virtualAccountNumber: user.virtualAccountNumber,
+        virtualAccountBank: user.virtualAccountBank,
+        paystackCustomerCode: user.paystackCustomerCode,
+      },
+    });
+    invalidateOwnershipCache(businessId, userId);
+
+    return {
+      status: 'active',
+      accountNumber: user.virtualAccountNumber,
+      bankName: user.virtualAccountBank || 'Wema Bank',
       accountName: business.ownerName,
       businessName: business.businessName,
     };
@@ -386,9 +453,16 @@ export async function getDVABalance(userId: string, businessId: string) {
     }),
   ]);
 
+  const resolvedAccountNum =
+    business.virtualAccountNumber ||
+    (await prisma.user.findUnique({
+      where: { id: userId },
+      select: { virtualAccountNumber: true },
+    }))?.virtualAccountNumber;
+
   return {
-    accountNumber: business.virtualAccountNumber,
-    accountStatus: business.virtualAccountNumber ? 'active' : 'none',
+    accountNumber: resolvedAccountNum,
+    accountStatus: resolvedAccountNum ? 'active' : 'none',
     completed: {
       total: completed._sum.amount ?? 0,
       count: completed._count,
@@ -443,6 +517,17 @@ export async function processDVAAssignmentWebhook(event: any) {
         dvaFailedAt: null,
       },
     });
+
+    await prisma.user.update({
+      where: { id: business.userId },
+      data: {
+        virtualAccountNumber: accountNumber,
+        virtualAccountBank: bankName || 'Wema Bank',
+        paystackCustomerCode: customerCode,
+      },
+    });
+
+    invalidateOwnershipCache(business.id, business.userId);
 
     logAudit({
       businessId: business.id,
@@ -669,10 +754,35 @@ export async function processDVATransferWebhook(event: any) {
     return false;
   }
 
-  // Find business by virtual account number
-  const business = await prisma.business.findFirst({
-    where: { virtualAccountNumber: accountNumber },
+  // Find business or user by virtual account number.
+  // Centralized DVA: 1 BVN = 1 User = 1 DVA. Honor User.primaryBusinessId first.
+  let business: any = null;
+
+  const user = await prisma.user.findFirst({
+    where: {
+      OR: [
+        { virtualAccountNumber: accountNumber },
+        { businesses: { some: { virtualAccountNumber: accountNumber } } },
+      ],
+    },
+    include: {
+      businesses: {
+        orderBy: { createdAt: 'asc' },
+      },
+    },
   });
+
+  if (user && user.businesses.length > 0) {
+    business = user.primaryBusinessId
+      ? user.businesses.find((b) => b.id === user.primaryBusinessId) || user.businesses[0]
+      : user.businesses[0];
+  }
+
+  if (!business) {
+    business = await prisma.business.findFirst({
+      where: { virtualAccountNumber: accountNumber },
+    });
+  }
 
   if (!business) {
     logger.warn('DVA transfer: no business found for account', { accountNumber, reference });

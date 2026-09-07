@@ -35,13 +35,42 @@ export async function createBusiness(userId: string, input: CreateBusinessInput,
 
   const merchantId = await generateMerchantId(db);
 
+  // Fetch user to inherit central credentials if already established
+  const user = await db.user.findUnique({
+    where: { id: userId },
+    select: {
+      id: true,
+      primaryBusinessId: true,
+      settlementBankCode: true,
+      settlementBankName: true,
+      settlementAccountNumber: true,
+      settlementAccountName: true,
+      settlementConnectedAt: true,
+      paystackCustomerCode: true,
+      virtualAccountNumber: true,
+      virtualAccountBank: true,
+    },
+  });
+
   const business = await db.business.create({
     data: {
       ...input,
       userId,
       merchantId,
+      // Auto-inherit central DVA credentials
+      paystackCustomerCode: user?.paystackCustomerCode ?? null,
+      virtualAccountNumber: user?.virtualAccountNumber ?? null,
+      virtualAccountBank: user?.virtualAccountBank ?? null,
     },
   });
+
+  // Designate as primary business if none set yet
+  if (user && !user.primaryBusinessId) {
+    await db.user.update({
+      where: { id: userId },
+      data: { primaryBusinessId: business.id },
+    });
+  }
 
   logAudit({
     userId,
