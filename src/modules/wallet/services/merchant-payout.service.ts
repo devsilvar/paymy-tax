@@ -267,12 +267,58 @@ export async function withdrawBalance(
     // Live Paystack Balance Guard
     const balanceCheck = await WalletService.checkLivePaystackBalance(transferAmount);
     if (!balanceCheck.canPayout) {
-      throw new AppError(
-        503,
-        'Platform settlement balance is currently insufficient to fulfill this transfer. Please try again later or contact support.',
-        'GATEWAY_BALANCE_INSUFFICIENT',
-        { deficitNaira: balanceCheck.deficit }
-      );
+      logger.warn('Paystack live balance insufficient for auto-payout — gracefully queuing for admin approval', {
+        payoutId: payout.id,
+        required: transferAmount,
+        deficit: balanceCheck.deficit,
+      });
+
+      const queuedPayout = await prisma.settlementPayout.update({
+        where: { id: payout.id },
+        data: {
+          status: 'pending',
+          failureReason: `Auto-payout queued for admin review: gateway balance deficit ₦${balanceCheck.deficit.toLocaleString('en-NG')}`,
+        },
+      });
+
+      logAudit({
+        userId,
+        businessId,
+        action: 'settlement.payout_requested',
+        resourceType: 'settlement_payout',
+        resourceId: payout.id,
+        newData: {
+          amount: quote.amount,
+          fee: quote.fee,
+          netAmount: quote.netAmount,
+          transferReference: payout.transferReference,
+          mode: 'queued_for_approval_due_to_gateway_balance',
+        },
+      });
+
+      void createReminderOnce({
+        businessId,
+        reminderType: 'payout_requested',
+        scheduledDate: new Date(),
+        message: `Withdrawal request of ${formatNaira(quote.netAmount)} received (ref ${payout.transferReference}). Queued for admin review — usually processed within 1–2 business hours.`,
+        referenceType: 'settlement_payout',
+        referenceId: payout.id,
+      }).catch(() => {});
+
+      return {
+        id: queuedPayout.id,
+        amount: toNumber(queuedPayout.amount),
+        fee: toNumber(queuedPayout.fee),
+        netAmount: toNumber(queuedPayout.netAmount),
+        transferReference: queuedPayout.transferReference,
+        status: 'pending',
+        destinationBankName: queuedPayout.destinationBankName,
+        destinationAccountNum: queuedPayout.destinationAccountNum,
+        destinationAccountName: queuedPayout.destinationAccountName,
+        initiatedAt: queuedPayout.initiatedAt,
+        completedAt: null,
+        message: 'Withdrawal request submitted. It will be processed once approved by an admin.',
+      };
     }
 
     const transferResult = await provider.initiateTransfer({
