@@ -12,10 +12,11 @@
 // "Generate Reminders" button on /reminders can reuse it for one
 // business. This file is just the scheduler + concurrency guard.
 //
-// Concurrency: the whole sweep is wrapped in a Postgres advisory lock
-// (LOCK_KEY = 947362). Future multi-instance deploys will not double-run.
-// Lock release sits in `finally`; Postgres also releases on session close
-// if the Node process crashes mid-sweep.
+// Concurrency: the whole sweep is wrapped in a Postgres transaction-scoped
+// advisory lock (LOCK_KEY = 947362). Future multi-instance deploys will not
+// double-run. Uses pg_try_advisory_xact_lock inside a transaction fence so
+// PostgreSQL automatically releases the lock upon commit or rollback without
+// leaking session locks across connection poolers (PgBouncer/Neon/Supabase).
 //
 // Gating: registerReminderCron() is a no-op unless config.cron.enabled.
 // Default: true in production, false in dev (set ENABLE_CRON=true to
@@ -47,23 +48,43 @@ export function registerReminderCron(): void {
     return;
   }
 
-  cron.schedule(SCHEDULE, runDailySweep, { timezone: TIMEZONE });
+  cron.schedule(
+    SCHEDULE,
+    () => {
+      void runDailySweep();
+    },
+    { timezone: TIMEZONE }
+  );
   logger.info('Reminder cron registered', { schedule: SCHEDULE, timezone: TIMEZONE });
 }
 
 // Exported so a one-off `tsx` script or future test can run the sweep
 // directly without waiting for the scheduler.
-export async function runDailySweep(): Promise<void> {
-  const lockResult = await prisma.$queryRaw<Array<{ locked: boolean }>>`
-    SELECT pg_try_advisory_lock(${LOCK_KEY}) AS locked
-  `;
-  const locked = lockResult[0]?.locked === true;
-
-  if (!locked) {
-    logger.info('Reminder cron sweep: lock held, skipping');
+export async function runDailySweep(opts?: { bypassLock?: boolean }): Promise<void> {
+  if (opts?.bypassLock) {
+    await executeReminderSweep();
     return;
   }
 
+  await prisma.$transaction(
+    async (tx) => {
+      const lockResult = await tx.$queryRaw<Array<{ locked: boolean }>>`
+        SELECT pg_try_advisory_xact_lock(${LOCK_KEY}) AS locked
+      `;
+      const locked = lockResult[0]?.locked === true;
+
+      if (!locked) {
+        logger.info('Reminder cron sweep: lock held, skipping');
+        return;
+      }
+
+      await executeReminderSweep();
+    },
+    { maxWait: 10000, timeout: 60000 }
+  );
+}
+
+async function executeReminderSweep(): Promise<void> {
   logger.info('Reminder cron sweep: start');
 
   try {
@@ -82,14 +103,6 @@ export async function runDailySweep(): Promise<void> {
       error: err instanceof Error ? err.message : String(err),
       stack: err instanceof Error ? err.stack : undefined,
     });
-  } finally {
-    try {
-      await prisma.$queryRaw`SELECT pg_advisory_unlock(${LOCK_KEY})`;
-    } catch (unlockErr) {
-      // Postgres releases the lock on session close anyway; just log.
-      logger.warn('Reminder cron sweep: advisory unlock failed', {
-        error: unlockErr instanceof Error ? unlockErr.message : String(unlockErr),
-      });
-    }
   }
 }
+

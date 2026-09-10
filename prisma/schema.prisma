@@ -14,12 +14,12 @@ model User {
   email               String     @unique
   passwordHash        String     @map("password_hash")
   phone               String?    @unique
-  // VarChar(12) — real Nigerian BVNs are 11 digits, but Paystack's official
-  // documented test-mode identity-validation fixture is a 12-digit value
-  // ("222222222221"). Widened so the sandbox credential can actually be
-  // stored; see check_bvn_length in migration 20260817120000_add_dva_failure_tracking.
-  bvn                 String?    @map("bvn") @db.VarChar(12)
-  nin                 String?    @map("nin") @db.VarChar(11)
+  // Encrypted at rest using AES-256-GCM (enc:v1:iv:tag:ciphertext).
+  // Blind indexed via HMAC-SHA256 (bvnHash / ninHash) for O(1) indexed uniqueness lookups.
+  bvn                 String?    @map("bvn") @db.Text
+  bvnHash             String?    @map("bvn_hash") @db.VarChar(64)
+  nin                 String?    @map("nin") @db.Text
+  ninHash             String?    @map("nin_hash") @db.VarChar(64)
   bvnVerifiedAt       DateTime?  @map("bvn_verified_at")
   ninVerifiedAt       DateTime?  @map("nin_verified_at")
   isVerified          Boolean    @default(false) @map("is_verified")
@@ -57,7 +57,8 @@ model User {
 
   @@index([email])
   @@index([phone])
-  @@index([bvn])
+  @@index([bvnHash])
+  @@index([ninHash])
   @@map("users")
 }
 

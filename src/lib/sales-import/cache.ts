@@ -33,6 +33,7 @@ export interface CachedImport {
 }
 
 const TTL_MS = 15 * 60 * 1000; // 15 minutes
+export const MAX_ENTRIES = 500;
 const store = new Map<string, CachedImport>();
 
 function sweep(): void {
@@ -44,6 +45,15 @@ function sweep(): void {
 
 export function putImport(entry: Omit<CachedImport, 'expiresAt'>): string {
   sweep();
+
+  // Enforce bounded memory footprint: evict oldest entry (LRU) if capacity reached
+  if (store.size >= MAX_ENTRIES) {
+    const oldestKey = store.keys().next().value;
+    if (oldestKey) {
+      store.delete(oldestKey);
+    }
+  }
+
   const token = randomUUID();
   store.set(token, { ...entry, expiresAt: Date.now() + TTL_MS });
   return token;
@@ -70,3 +80,8 @@ export function dropImport(token: string): void {
 export function __clearAll(): void {
   store.clear();
 }
+
+export function __getStoreSize(): number {
+  return store.size;
+}
+

@@ -22,32 +22,44 @@ interface AuditEntry {
  * When called WITHOUT `tx` (the default), it fires-and-forgets against
  * the global prisma client so it never blocks or crashes the caller.
  */
-export function logAudit(entry: AuditEntry, tx?: TxClient): void {
-  const db = tx ?? prisma;
-
-  const promise = db.auditLog.create({
-    data: {
-      userId: entry.userId,
-      businessId: entry.businessId,
-      action: entry.action,
-      resourceType: entry.resourceType,
-      resourceId: entry.resourceId,
-      oldData: entry.oldData ?? undefined,
-      newData: entry.newData ?? undefined,
-      ipAddress: entry.ipAddress,
-      userAgent: entry.userAgent,
-    },
-  });
-
-  // Inside a transaction the caller awaits the whole $transaction block,
-  // so we don't need to handle the promise here — Prisma does.
-  // Outside a transaction, swallow errors so the request isn't affected.
-  if (!tx) {
-    promise.catch((err) => {
-      logger.error('Failed to write audit log', {
-        error: err.message,
-        entry,
-      });
+export async function logAudit(entry: AuditEntry, tx?: TxClient): Promise<void> {
+  if (tx) {
+    // Within an interactive transaction, explicitly await the database insert
+    // so it forms part of the transaction's atomic promise resolution and avoids floating promises.
+    await tx.auditLog.create({
+      data: {
+        userId: entry.userId,
+        businessId: entry.businessId,
+        action: entry.action,
+        resourceType: entry.resourceType,
+        resourceId: entry.resourceId,
+        oldData: entry.oldData ?? undefined,
+        newData: entry.newData ?? undefined,
+        ipAddress: entry.ipAddress,
+        userAgent: entry.userAgent,
+      },
     });
+  } else {
+    // Outside a transaction, fire-and-forget against the global prisma client
+    prisma.auditLog
+      .create({
+        data: {
+          userId: entry.userId,
+          businessId: entry.businessId,
+          action: entry.action,
+          resourceType: entry.resourceType,
+          resourceId: entry.resourceId,
+          oldData: entry.oldData ?? undefined,
+          newData: entry.newData ?? undefined,
+          ipAddress: entry.ipAddress,
+          userAgent: entry.userAgent,
+        },
+      })
+      .catch((err) => {
+        logger.error('Failed to write audit log', {
+          error: err.message,
+          entry,
+        });
+      });
   }
 }

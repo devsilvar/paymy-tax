@@ -2,9 +2,12 @@ import { describe, test, expect, jest, beforeEach } from '@jest/globals';
 import {
   toNumber,
   assertMonthNotLocked,
+  isMonthLockedOrFinalized,
+  resolveTransactionDateForLockedMonth,
   SETTLED_SALE_STATUSES,
   TAXABLE_SALES_WHERE,
 } from '../../src/shared/helpers';
+
 import prisma, { TxClient } from '../../src/lib/prisma';
 import { AppError } from '../../src/middleware/errorHandler';
 
@@ -140,4 +143,70 @@ describe('Canonical Helpers Unit Tests', () => {
       expect(prismaSpy).not.toHaveBeenCalled();
     });
   });
+
+  describe('isMonthLockedOrFinalized & resolveTransactionDateForLockedMonth', () => {
+    const mockBusinessId = 'biz-test-uuid';
+    const sampleDate = new Date('2026-02-15T12:00:00Z');
+
+    beforeEach(() => {
+      jest.restoreAllMocks();
+    });
+
+    test('isMonthLockedOrFinalized returns false when report is absent or open', async () => {
+      jest.spyOn(prisma.monthlyTaxReport, 'findUnique').mockResolvedValue(null as any);
+      const res = await isMonthLockedOrFinalized(mockBusinessId, sampleDate);
+      expect(res.isLocked).toBe(false);
+      expect(res.isFinalized).toBe(false);
+      expect(res.lockedOrFinalized).toBe(false);
+    });
+
+    test('isMonthLockedOrFinalized returns true when report is locked or finalized', async () => {
+      jest.spyOn(prisma.monthlyTaxReport, 'findUnique').mockResolvedValue({
+        isLocked: true,
+        isFinalized: true,
+      } as any);
+      const res = await isMonthLockedOrFinalized(mockBusinessId, sampleDate);
+      expect(res.isLocked).toBe(true);
+      expect(res.lockedOrFinalized).toBe(true);
+    });
+
+    test('resolveTransactionDateForLockedMonth keeps original date if month is open', async () => {
+      jest.spyOn(prisma.monthlyTaxReport, 'findUnique').mockResolvedValue(null as any);
+      const result = await resolveTransactionDateForLockedMonth(mockBusinessId, sampleDate);
+      expect(result.wasAdjusted).toBe(false);
+      expect(result.effectiveDate).toBe(sampleDate);
+      expect(result.originalDate).toBeUndefined();
+    });
+
+    test('resolveTransactionDateForLockedMonth rolls date forward to current month if locked', async () => {
+      jest.spyOn(prisma.monthlyTaxReport, 'findUnique').mockResolvedValue({
+        isLocked: true,
+        isFinalized: true,
+      } as any);
+
+      const before = new Date();
+      const result = await resolveTransactionDateForLockedMonth(mockBusinessId, sampleDate);
+      const after = new Date();
+
+      expect(result.wasAdjusted).toBe(true);
+      expect(result.originalDate).toBe(sampleDate);
+      expect(result.effectiveDate.getTime()).toBeGreaterThanOrEqual(before.getTime() - 100);
+      expect(result.effectiveDate.getTime()).toBeLessThanOrEqual(after.getTime() + 100);
+      expect(result.reason).toContain('locked tax period');
+    });
+
+    test('resolveTransactionDateForLockedMonth rolls date forward if finalized but not locked', async () => {
+      jest.spyOn(prisma.monthlyTaxReport, 'findUnique').mockResolvedValue({
+        isLocked: false,
+        isFinalized: true,
+      } as any);
+
+      const result = await resolveTransactionDateForLockedMonth(mockBusinessId, sampleDate);
+
+      expect(result.wasAdjusted).toBe(true);
+      expect(result.originalDate).toBe(sampleDate);
+      expect(result.reason).toContain('finalized tax period');
+    });
+  });
 });
+

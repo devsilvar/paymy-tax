@@ -50,3 +50,66 @@ export async function assertMonthNotLocked(
     );
   }
 }
+
+/**
+ * Checks whether the month corresponding to the given date is finalized or locked.
+ */
+export async function isMonthLockedOrFinalized(
+  businessId: string,
+  date: Date,
+  db: TxClient | typeof prisma = prisma
+): Promise<{ isLocked: boolean; isFinalized: boolean; lockedOrFinalized: boolean }> {
+  const monthStart = new Date(
+    Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), 1)
+  );
+
+  const report = await db.monthlyTaxReport.findUnique({
+    where: {
+      businessId_taxMonth: {
+        businessId,
+        taxMonth: monthStart,
+      },
+    },
+    select: { isLocked: true, isFinalized: true },
+  });
+
+  const isLocked = Boolean(report?.isLocked);
+  const isFinalized = Boolean(report?.isFinalized);
+  return { isLocked, isFinalized, lockedOrFinalized: isLocked || isFinalized };
+}
+
+export interface ResolveTransactionDateResult {
+  effectiveDate: Date;
+  wasAdjusted: boolean;
+  originalDate?: Date;
+  reason?: string;
+}
+
+/**
+ * Ensures a sales transaction date does not land in a locked/finalized tax month.
+ * If the target month is locked or finalized, adjusts the date to the current active month (today)
+ * and returns adjustment metadata for regulatory transparency.
+ */
+export async function resolveTransactionDateForLockedMonth(
+  businessId: string,
+  enteredDate: Date,
+  db: TxClient | typeof prisma = prisma
+): Promise<ResolveTransactionDateResult> {
+  const check = await isMonthLockedOrFinalized(businessId, enteredDate, db);
+  if (!check.lockedOrFinalized) {
+    return { effectiveDate: enteredDate, wasAdjusted: false };
+  }
+
+  const today = new Date();
+  const reason = check.isLocked
+    ? 'Entered date was in a locked tax period (tax already remitted); transaction date adjusted to current active month'
+    : 'Entered date was in a finalized tax period; transaction date adjusted to current active month';
+
+  return {
+    effectiveDate: today,
+    wasAdjusted: true,
+    originalDate: enteredDate,
+    reason,
+  };
+}
+

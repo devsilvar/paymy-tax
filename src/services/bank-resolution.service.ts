@@ -1,5 +1,5 @@
 /**
- * Backward-compatible re-export for bank-resolution.service.
- * Canonical implementation lives in @/modules/wallet/services/bank-resolution.service.
+ * Facade for backward compatibility.
+ * Domain implementation moved to `@/services/bank/bank-resolution.service`.
  */
-export * from '@/modules/wallet/services/bank-resolution.service';
+export * from './bank/bank-resolution.service';

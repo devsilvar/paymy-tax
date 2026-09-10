@@ -6,7 +6,10 @@
 //      Any drift > ₦0.01 triggers an immediate high-priority warning log for administrative review.
 //
 // Concurrency:
-//   Wrapped in Postgres advisory lock (LOCK_KEY = 947363).
+//   Wrapped in Postgres transaction-scoped advisory lock (LOCK_KEY = 947363).
+//   Uses pg_try_advisory_xact_lock inside $transaction fence so PostgreSQL
+//   automatically releases the lock upon commit or rollback without leaking
+//   session locks across connection poolers (PgBouncer/Neon/Supabase).
 //   Guarantees single execution across clustered/multi-container deployments.
 
 import cron from 'node-cron';
@@ -42,121 +45,135 @@ export function registerWalletReconciliationCron(): void {
   logger.info('Wallet reconciliation cron registered', { schedule: SCHEDULE, timezone: TIMEZONE });
 }
 
-export async function runWalletReconciliationSweep(opts?: {
-  bypassLock?: boolean;
-}): Promise<{
+export interface WalletReconciliationResult {
   usersAudited: number;
   ledgerMismatchCount: number;
   oracleDriftCount: number;
   totalDriftNaira: number;
-}> {
-  if (!opts?.bypassLock) {
-    const lockResult = await prisma.$queryRaw<Array<{ locked: boolean }>>`
-      SELECT pg_try_advisory_lock(${LOCK_KEY}) AS locked
-    `;
-    const locked = lockResult[0]?.locked === true;
+}
 
-    if (!locked) {
-      logger.warn('Wallet reconciliation sweep skipped — another worker holds the lock', {
-        lockKey: LOCK_KEY,
-      });
-      return { usersAudited: 0, ledgerMismatchCount: 0, oracleDriftCount: 0, totalDriftNaira: 0 };
-    }
+export async function runWalletReconciliationSweep(opts?: {
+  bypassLock?: boolean;
+}): Promise<WalletReconciliationResult> {
+  if (opts?.bypassLock) {
+    return await executeReconciliation();
   }
 
-  try {
-    logger.info('Starting nightly wallet reconciliation sweep');
+  return await prisma.$transaction(
+    async (tx) => {
+      const lockResult = await tx.$queryRaw<Array<{ locked: boolean }>>`
+        SELECT pg_try_advisory_xact_lock(${LOCK_KEY}) AS locked
+      `;
+      const locked = lockResult[0]?.locked === true;
 
-    const wallets = await prisma.walletBalance.findMany({
-      include: {
-        user: {
-          select: {
-            id: true,
-            email: true,
-            businesses: {
-              select: { id: true },
-              take: 1,
-            },
+      if (!locked) {
+        logger.warn('Wallet reconciliation sweep skipped — another worker holds the lock', {
+          lockKey: LOCK_KEY,
+        });
+        return { usersAudited: 0, ledgerMismatchCount: 0, oracleDriftCount: 0, totalDriftNaira: 0 };
+      }
+
+      return await executeReconciliation();
+    },
+    { maxWait: 10000, timeout: 60000 }
+  );
+}
+
+async function executeReconciliation(): Promise<WalletReconciliationResult> {
+  logger.info('Starting nightly wallet reconciliation sweep');
+
+  const wallets = await prisma.walletBalance.findMany({
+    include: {
+      user: {
+        select: {
+          id: true,
+          email: true,
+          businesses: {
+            select: { id: true },
+            take: 1,
           },
         },
       },
-    });
+    },
+  });
 
-    let usersAudited = 0;
-    let ledgerMismatchCount = 0;
-    let oracleDriftCount = 0;
-    let totalDriftNaira = 0;
+  // Batch query all wallet transaction sums by userId in a single query (eliminates N+1 loop)
+  const txAggs = await prisma.walletTransaction.groupBy({
+    by: ['userId'],
+    _sum: { netAmount: true },
+    _count: { _all: true },
+  });
 
-    for (const wallet of wallets) {
-      usersAudited++;
-      const currentBalance = toNumber(wallet.balance);
+  const txAggMap = new Map(
+    txAggs.map((agg) => [
+      agg.userId,
+      {
+        sumNetAmount: toNumber(agg._sum.netAmount ?? 0),
+        count: agg._count._all,
+      },
+    ])
+  );
 
-      // Invariant 1: Internal Ledger Consistency (if user has WalletTransactions)
-      const txAgg = await prisma.walletTransaction.aggregate({
-        where: { userId: wallet.userId },
-        _sum: { netAmount: true },
-        _count: true,
-      });
+  let usersAudited = 0;
+  let ledgerMismatchCount = 0;
+  let oracleDriftCount = 0;
+  let totalDriftNaira = 0;
 
-      if (txAgg._count > 0) {
-        const sumNetAmount = toNumber(txAgg._sum.netAmount ?? 0);
-        const internalDrift = Math.abs(currentBalance - sumNetAmount);
-        if (internalDrift > 0.01) {
-          ledgerMismatchCount++;
-          logger.error('[WALLET_LEDGER_MISMATCH] WalletBalance does not match transaction sum', {
-            userId: wallet.userId,
-            walletBalance: currentBalance,
-            txSum: sumNetAmount,
-            drift: internalDrift,
-          });
-        }
-      }
+  for (const wallet of wallets) {
+    usersAudited++;
+    const currentBalance = toNumber(wallet.balance);
 
-      // Invariant 2: Shadow Mode Oracle comparison against getPayoutPreview
-      const primaryBusiness = wallet.user.businesses[0];
-      if (primaryBusiness) {
-        try {
-          const preview = await getPayoutPreview(wallet.userId, primaryBusiness.id);
-          const oracleAvailable = preview.availableForWithdrawal;
-          const oracleDrift = Math.abs(currentBalance - oracleAvailable);
-
-          if (oracleDrift > 0.01) {
-            oracleDriftCount++;
-            totalDriftNaira += oracleDrift;
-            logger.warn('[WALLET_SHADOW_ORACLE_DRIFT] Drift detected against getPayoutPreview oracle', {
-              userId: wallet.userId,
-              userEmail: wallet.user.email,
-              walletBalance: currentBalance,
-              oracleAvailable,
-              driftNaira: oracleDrift,
-            });
-          }
-        } catch (err: any) {
-          logger.error('Failed to run oracle getPayoutPreview for user during reconciliation', {
-            userId: wallet.userId,
-            error: err.message,
-          });
-        }
+    // Invariant 1: Internal Ledger Consistency (indexed from pre-aggregated batch map)
+    const txAgg = txAggMap.get(wallet.userId);
+    if (txAgg && txAgg.count > 0) {
+      const sumNetAmount = txAgg.sumNetAmount;
+      const internalDrift = Math.abs(currentBalance - sumNetAmount);
+      if (internalDrift > 0.01) {
+        ledgerMismatchCount++;
+        logger.error('[WALLET_LEDGER_MISMATCH] WalletBalance does not match transaction sum', {
+          userId: wallet.userId,
+          walletBalance: currentBalance,
+          txSum: sumNetAmount,
+          drift: internalDrift,
+        });
       }
     }
 
-    logger.info('Wallet reconciliation sweep complete', {
-      usersAudited,
-      ledgerMismatchCount,
-      oracleDriftCount,
-      totalDriftNaira,
-    });
-
-    return { usersAudited, ledgerMismatchCount, oracleDriftCount, totalDriftNaira };
-  } finally {
-    if (!opts?.bypassLock) {
+    // Invariant 2: Shadow Mode Oracle comparison against getPayoutPreview
+    const primaryBusiness = wallet.user.businesses[0];
+    if (primaryBusiness) {
       try {
-        await prisma.$queryRaw`SELECT pg_advisory_unlock(${LOCK_KEY})`;
-      } catch (unlockErr) {
-        logger.warn('Wallet reconciliation sweep: advisory unlock failed', {
-          error: unlockErr instanceof Error ? unlockErr.message : String(unlockErr),
+        const preview = await getPayoutPreview(wallet.userId, primaryBusiness.id);
+        const oracleAvailable = preview.availableForWithdrawal;
+        const oracleDrift = Math.abs(currentBalance - oracleAvailable);
+
+        if (oracleDrift > 0.01) {
+          oracleDriftCount++;
+          totalDriftNaira += oracleDrift;
+          logger.warn('[WALLET_SHADOW_ORACLE_DRIFT] Drift detected against getPayoutPreview oracle', {
+            userId: wallet.userId,
+            userEmail: wallet.user.email,
+            walletBalance: currentBalance,
+            oracleAvailable,
+            driftNaira: oracleDrift,
+          });
+        }
+      } catch (err: any) {
+        logger.error('Failed to run oracle getPayoutPreview for user during reconciliation', {
+          userId: wallet.userId,
+          error: err.message,
         });
       }
     }
   }
+
+  logger.info('Wallet reconciliation sweep complete', {
+    usersAudited,
+    ledgerMismatchCount,
+    oracleDriftCount,
+    totalDriftNaira,
+  });
+
+  return { usersAudited, ledgerMismatchCount, oracleDriftCount, totalDriftNaira };
 }
+

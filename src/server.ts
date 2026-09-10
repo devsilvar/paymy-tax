@@ -13,6 +13,7 @@ import logger from './lib/logger';
 import prisma from './lib/prisma';
 import { registerReminderCron } from './jobs/reminders.cron';
 import { registerWalletReconciliationCron } from './jobs/wallet-reconciliation.cron';
+import { registerPayoutReconciliationCron } from './jobs/payout-reconciliation.cron';
 import { registerDomainEventListeners } from './core/events/register-listeners';
 
 /**
@@ -44,6 +45,7 @@ const startServer = async () => {
       try {
         registerReminderCron();
         registerWalletReconciliationCron();
+        registerPayoutReconciliationCron();
       } catch (cronErr) {
         logger.error('❌ Failed to register scheduled cron jobs', {
           error: cronErr instanceof Error ? cronErr.message : String(cronErr),

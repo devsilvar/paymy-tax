@@ -26,6 +26,11 @@ function validateConfig() {
     'JWT_REFRESH_SECRET',
   ];
 
+  // Mandate ENCRYPTION_KEY in production server runtimes (exempting test runner simulations)
+  if (process.env.NODE_ENV === 'production' && !process.env.JEST_WORKER_ID) {
+    required.push('ENCRYPTION_KEY');
+  }
+
   const missing = required.filter((key) => !process.env[key]);
 
   if (missing.length > 0) {
@@ -246,6 +251,16 @@ export const config = {
     enabled:
       process.env.ENABLE_CRON === 'true' ||
       process.env.NODE_ENV === 'production',
+  },
+
+  // Security & KYC Cryptography
+  security: {
+    encryptionKey:
+      process.env.ENCRYPTION_KEY ||
+      'dev-tax-wallx-encryption-key-32b-secret!',
+    blindIndexKey:
+      process.env.BLIND_INDEX_KEY ||
+      'dev-tax-wallx-blind-index-key-32b-secret!',
   },
 } as const;
 
