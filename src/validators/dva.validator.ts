@@ -47,6 +47,33 @@ export const validateCustomerSchema = z.object({
 
 export type ValidateCustomerInput = z.infer<typeof validateCustomerSchema>;
 
+export const setupVirtualAccountSchema = z
+  .object({
+    bvn: z
+      .string()
+      .trim()
+      .regex(/^\d{11,12}$/, 'BVN must be 11 or 12 digits')
+      .optional(),
+    nin: z
+      .string()
+      .trim()
+      .regex(/^\d{11}$/, 'NIN must be exactly 11 digits')
+      .optional(),
+    bankCode: z
+      .string()
+      .trim()
+      .regex(/^\d{3,6}$/, 'Bank code must be a 3-6 digit NIBSS code')
+      .optional(),
+    accountNumber: z
+      .string()
+      .trim()
+      .regex(/^\d{10}$/, 'Account number must be exactly 10 digits (NUBAN)')
+      .optional(),
+  })
+  .optional();
+
+export type SetupVirtualAccountInput = z.infer<typeof setupVirtualAccountSchema>;
+
 /**
  * Settlement bank connection (Option A subaccount split-settlement).
  *

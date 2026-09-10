@@ -9,6 +9,10 @@ import { createReminderOnce } from '@/services/reminder.service';
 import { formatNaira } from '@/lib/format';
 import { verifyBusinessOwnership, invalidateOwnershipCache } from '@/lib/ownership';
 import { dvaProcessingFee, round2 } from '@/lib/paystack-fees';
+import { SetupVirtualAccountInput } from '@/validators/dva.validator';
+import { WalletService } from './wallet.service';
+import { toNumber } from '@/shared/helpers/number';
+import { eventBus } from '@/core/events/event-bus';
 
 // ─── Helpers ────────────────────────────────────────────────
 
@@ -55,6 +59,16 @@ export async function validateCustomer(
       'No Paystack customer exists for this business. Set up virtual account first.',
       'NO_CUSTOMER',
     );
+  }
+
+  // Pre-check BVN uniqueness across other user accounts
+  const existing = await prisma.user.findFirst({
+    where: { bvn: input.bvn, id: { not: userId } },
+    select: { id: true },
+  });
+
+  if (existing) {
+    throw new AppError(409, 'This BVN is already linked to another account', 'BVN_ALREADY_LINKED');
   }
 
   const provider = getPaymentProvider();
@@ -113,8 +127,48 @@ export async function validateCustomer(
 
 // ─── Setup Virtual Account ──────────────────────────────────
 
-export async function setupVirtualAccount(userId: string, businessId: string) {
+export async function setupVirtualAccount(
+  userId: string,
+  businessId: string,
+  input?: SetupVirtualAccountInput
+) {
   const business = await verifyBusinessOwnership(userId, businessId);
+
+  // If BVN is supplied during onboarding, persist and verify on User record
+  if (input?.bvn) {
+    const existing = await prisma.user.findFirst({
+      where: { bvn: input.bvn, id: { not: userId } },
+      select: { id: true },
+    });
+
+    if (existing) {
+      throw new AppError(409, 'This BVN is already linked to another account', 'BVN_ALREADY_LINKED');
+    }
+
+    await prisma.user.update({
+      where: { id: userId },
+      data: {
+        bvn: input.bvn,
+        nin: input.nin || undefined,
+        bvnVerifiedAt: new Date(),
+        ninVerifiedAt: input.nin ? new Date() : undefined,
+      },
+    });
+
+    logAudit({
+      userId,
+      businessId,
+      action: 'user.bvn_stored_onboarding',
+      resourceType: 'user_security',
+      resourceId: userId,
+      newData: { bvnLast4: input.bvn.slice(-4), bvnVerifiedAt: new Date().toISOString() },
+    });
+
+    logger.info('User BVN stored during DVA onboarding', {
+      userId,
+      bvnLast4: input.bvn.slice(-4),
+    });
+  }
 
   // Check if DVA already exists
   if (business.virtualAccountNumber) {
@@ -432,7 +486,7 @@ export async function getDVABalance(userId: string, businessId: string) {
   const dvaFilter = {
     businessId: business.id,
     source: 'bank_transfer' as const,
-    metadata: { path: ['channel'], equals: 'dva' },
+    dvaOrigin: true,
   };
 
   const [completed, pending, lastTransaction] = await Promise.all([
@@ -626,6 +680,16 @@ export async function processCustomerIdentificationWebhook(event: any) {
       data: { dvaFailureReason: null, dvaFailedAt: null },
     });
 
+    // Mark user BVN verified on user record
+    const webhookBvn = data.bvn || data.identification?.number;
+    await prisma.user.update({
+      where: { id: business.userId },
+      data: {
+        bvnVerifiedAt: new Date(),
+        ...(webhookBvn ? { bvn: webhookBvn } : {}),
+      },
+    });
+
     // Already has a DVA — nothing to do (a re-validation or replayed webhook).
     if (business.virtualAccountNumber) {
       logger.info('Identification success but DVA already assigned — skipping', {
@@ -738,6 +802,13 @@ export async function processDVATransferWebhook(event: any) {
   // Only handle dedicated_nuban transfers
   if (channel !== 'dedicated_nuban') return false;
 
+  // If this transfer corresponds to a storefront order, skip generic DVA auto-capture
+  // to avoid double-booking against the Storefront order fulfillment handler.
+  if (reference && typeof reference === 'string' && reference.startsWith('ORD-')) {
+    logger.info('DVA transfer corresponds to storefront order, skipping generic auto-capture', { reference });
+    return false;
+  }
+
   // Find the virtual account number from the transaction.
   // `authorization.receiver_bank_account_number` is the field real Paystack
   // charge.success payloads use for DVA transfers — checked first. The other
@@ -820,6 +891,7 @@ export async function processDVATransferWebhook(event: any) {
       businessId: business.id,
       amount,
       source: 'bank_transfer',
+      dvaOrigin: true,
       status: 'pending',
       referenceId: reference,
       customerName: data.customer?.first_name
@@ -860,6 +932,57 @@ export async function processDVATransferWebhook(event: any) {
     amount,
     reference,
   });
+
+  // Emit dva.transfer_received post-commit event
+  eventBus.emit('dva.transfer_received', {
+    accountNumber,
+    amount,
+    reference,
+    payerName: data.customer?.first_name
+      ? `${data.customer.first_name} ${data.customer.last_name || ''}`.trim()
+      : undefined,
+    rawEvent: event,
+  });
+
+  // Credit Central User Wallet for this DVA inflow
+  try {
+    const feeNaira =
+      typeof data.fees === 'number' ? round2(data.fees / 100) : dvaProcessingFee(amount);
+    const netRetained =
+      isSplitSettled && platformRetained
+        ? toNumber(platformRetained)
+        : Math.max(0, amount - feeNaira);
+
+    const walletTx = await WalletService.creditWallet({
+      userId: business.userId,
+      businessId: business.id,
+      amount,
+      fee: feeNaira,
+      netAmount: netRetained,
+      reference,
+      source: 'dva',
+      description: `DVA bank transfer from ${data.customer?.first_name || 'Customer'}`,
+      linkedSaleId: sale.id,
+      metadata: {
+        channel: 'dva',
+        paystackTransactionId: data.id,
+        splitSettled: isSplitSettled,
+      },
+    });
+
+    // Emit wallet.credited post-commit event
+    eventBus.emit('wallet.credited', {
+      userId: business.userId,
+      businessId: business.id,
+      amount,
+      transactionId: walletTx.transaction.id,
+    });
+  } catch (walletErr) {
+    logger.error('Failed to credit central wallet for auto-captured DVA transfer', {
+      reference,
+      err: walletErr instanceof Error ? walletErr.message : walletErr,
+    });
+  }
 
   // Fire-and-forget reminder. Replayed webhooks short-circuit at the
   // duplicate-check above, so this only fires once per real sale.
@@ -986,7 +1109,7 @@ export async function getDVATransactions(
   const where: any = {
     businessId,
     source: 'bank_transfer',
-    metadata: { path: ['channel'], equals: 'dva' },
+    dvaOrigin: true,
   };
 
   if (query.status === 'confirmed') {

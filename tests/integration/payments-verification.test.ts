@@ -134,7 +134,7 @@ describe('DVA Payments, Transaction Verification & Tax Treatment', () => {
     // 50,000 + 10,000 = 60,000 currently pending verification
     expect(Number(balance.pendingVerification.total)).toBe(60000);
     expect(balance.pendingVerification.count).toBe(2);
-    expect(Number(balance.confirmed.total)).toBe(0);
+    expect(Number(balance.completed.total)).toBe(0);
   });
 
   // ─── 3. Verification Workflow (Taxable vs Non-Taxable) ───────
@@ -143,13 +143,13 @@ describe('DVA Payments, Transaction Verification & Tax Treatment', () => {
     const unverifiedList = await salesService.getUnverifiedSales(userId, businessId);
     expect(unverifiedList.data.length).toBeGreaterThanOrEqual(1);
 
-    const firstSale = unverifiedList.data[0];
+    const productSale = unverifiedList.data.find((s) => Number(s.amount) === 50000) ?? unverifiedList.data[0];
 
     // Verify as "Product Sale" (Taxable)
     const verified = await salesService.verifySale(
       userId,
       businessId,
-      firstSale.id,
+      productSale.id,
       'Product Sale'
     );
 
@@ -163,13 +163,13 @@ describe('DVA Payments, Transaction Verification & Tax Treatment', () => {
     const unverifiedList = await salesService.getUnverifiedSales(userId, businessId);
     expect(unverifiedList.data.length).toBeGreaterThanOrEqual(1);
 
-    const secondSale = unverifiedList.data[0];
+    const capitalSale = unverifiedList.data.find((s) => Number(s.amount) === 10000) ?? unverifiedList.data[0];
 
     // Verify as "Capital Injection" (Non-Taxable)
     const verified = await salesService.verifySale(
       userId,
       businessId,
-      secondSale.id,
+      capitalSale.id,
       'Capital Injection'
     );
 
@@ -192,7 +192,7 @@ describe('DVA Payments, Transaction Verification & Tax Treatment', () => {
       data: {
         businessId,
         amount: 10000,
-        category: 'supplies',
+        category: 'inventory',
         description: 'Store packaging materials',
         expenseDate: new Date('2026-03-15T10:00:00Z'),
         isDeductible: true,
@@ -200,7 +200,7 @@ describe('DVA Payments, Transaction Verification & Tax Treatment', () => {
     });
 
     // Calculate tax for March 2026 (Month 3, Year 2026)
-    const taxReport = await taxService.calculateTax(userId, businessId, 2026, 3);
+    const taxReport = await taxService.calculateTax(userId, businessId, 3, 2026);
 
     // Expected:
     // Total Sales (Taxable only) = 50,000

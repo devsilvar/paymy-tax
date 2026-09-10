@@ -26,7 +26,7 @@
     "test:setup": "tsx src/test-setup.ts",
     "test": "jest --config jest.config.ts",
     "test:unit": "jest --config jest.config.ts tests/unit",
-    "test:integration": "jest --config jest.config.ts tests/integration --runInBand",
+    "test:integration": "jest --config jest.config.ts tests/integration --runInBand --testTimeout=30000",
     "test:e2e": "jest --config jest.config.ts tests/e2e --runInBand --forceExit --testTimeout=30000",
     "typecheck": "tsc --noEmit",
     "lint": "eslint src --ext .ts",

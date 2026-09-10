@@ -4,15 +4,11 @@ import logger from '@/lib/logger';
 import { AppError } from '@/middleware/errorHandler';
 import { logAudit } from '@/lib/audit';
 import { Decimal } from '@prisma/client/runtime/library';
-import { createMarginWarning } from '@/services/reminder.service';
+import { createMarginWarning, createReminderOnce } from '@/services/reminder.service';
 import { verifyBusinessOwnership } from '@/lib/ownership';
-
-// ─── Helpers ────────────────────────────────────────────────
-
-function toNumber(val: Decimal | number | null): number {
-  if (val === null) return 0;
-  return typeof val === 'number' ? val : val.toNumber();
-}
+import { buildTaxSlipPdf } from '@/services/tax-slip.pdf';
+import { formatNaira } from '@/lib/format';
+import { toNumber, TAXABLE_SALES_WHERE } from '@/shared/helpers';
 
 // ─── Tax Calculation ────────────────────────────────────────
 
@@ -56,8 +52,7 @@ export async function calculateTax(
       where: {
         businessId,
         transactionDate: dateFilter,
-        status: { in: ['confirmed', 'completed'] },
-        isTaxable: true,
+        ...TAXABLE_SALES_WHERE,
       },
       _sum: { amount: true },
     }),
@@ -174,14 +169,39 @@ export async function listReports(
       skip: offset,
       take: query.limit,
       orderBy: { taxMonth: 'desc' },
+      include: {
+        payments: {
+          orderBy: { createdAt: 'desc' },
+          take: 1,
+          select: {
+            id: true,
+            transactionReference: true,
+            amountPaid: true,
+            paymentMethod: true,
+            paymentStatus: true,
+            paymentDate: true,
+            firsRemittanceRef: true,
+            firsReceiptUrl: true,
+            createdAt: true,
+          },
+        },
+      },
     }),
     prisma.monthlyTaxReport.count({ where }),
   ]);
 
   const totalPages = Math.ceil(total / query.limit);
 
+  const formattedReports = reports.map((r) => {
+    const latestPayment = r.payments && r.payments.length > 0 ? r.payments[0] : null;
+    return {
+      ...r,
+      latestPayment,
+    };
+  });
+
   return {
-    data: reports,
+    data: formattedReports,
     pagination: {
       page: query.page,
       limit: query.limit,
@@ -285,6 +305,66 @@ export async function unfinalizeReport(userId: string, businessId: string, repor
   return updated;
 }
 
+export async function resetReport(userId: string, businessId: string, reportId: string) {
+  await verifyBusinessOwnership(userId, businessId);
+
+  const report = await prisma.monthlyTaxReport.findUnique({
+    where: { id: reportId },
+    include: { payments: true },
+  });
+
+  if (!report || report.businessId !== businessId) {
+    throw new AppError(404, 'Tax report not found', 'REPORT_NOT_FOUND');
+  }
+
+  const updated = await prisma.$transaction(async (tx) => {
+    // Delete any payments linked to this report
+    await tx.taxPayment.deleteMany({
+      where: { taxReportId: reportId },
+    });
+
+    // Delete any statements linked to this report
+    await tx.taxStatement.deleteMany({
+      where: { taxReportId: reportId },
+    });
+
+    // Reset report back to draft
+    const res = await tx.monthlyTaxReport.update({
+      where: { id: reportId },
+      data: {
+        paymentStatus: 'pending',
+        isFinalized: false,
+        isLocked: false,
+        lockedAt: null,
+      },
+    });
+
+    // Clean up any reminders referencing this report
+    await tx.reminder.deleteMany({
+      where: {
+        businessId,
+        referenceType: 'monthly_tax_report',
+        referenceId: reportId,
+      },
+    });
+
+    return res;
+  });
+
+  logAudit({
+    userId,
+    businessId,
+    action: 'tax.report_reset',
+    resourceType: 'monthly_tax_report',
+    resourceId: reportId,
+    newData: { isFinalized: false, isLocked: false, paymentStatus: 'pending' },
+  });
+
+  logger.info('Tax report reset to draft', { reportId, businessId });
+
+  return updated;
+}
+
 // ─── Dashboard ──────────────────────────────────────────────
 
 export async function getDashboard(
@@ -319,7 +399,7 @@ export async function getDashboard(
       prisma.salesTransaction.aggregate({
         // Same settled-status rule as calculateTax — the dashboard must match
         // what "Calculate Tax" would produce.
-        where: { businessId, status: { in: ['confirmed', 'completed'] }, isTaxable: true },
+        where: { businessId, ...TAXABLE_SALES_WHERE },
         _sum: { amount: true },
       }),
       prisma.expense.aggregate({
@@ -332,8 +412,7 @@ export async function getDashboard(
         where: {
           businessId,
           transactionDate: currentDateFilter,
-          status: { in: ['confirmed', 'completed'] },
-          isTaxable: true,
+          ...TAXABLE_SALES_WHERE,
         },
         _sum: { amount: true },
       }),
@@ -756,3 +835,99 @@ export async function getTaxAnalytics(
     yoy,
   };
 }
+
+/**
+ * Generates an official Monthly Tax Assessment Slip PDF for a specific tax report.
+ */
+export async function downloadTaxSlip(
+  userId: string,
+  businessId: string,
+  reportId: string
+): Promise<{ buffer: Buffer; filename: string }> {
+  const business = await verifyBusinessOwnership(userId, businessId);
+
+  const report = await prisma.monthlyTaxReport.findUnique({
+    where: { id: reportId },
+    include: {
+      payments: {
+        where: { paymentStatus: 'completed' },
+        orderBy: { createdAt: 'desc' },
+        take: 1,
+      },
+    },
+  });
+
+  if (!report || report.businessId !== businessId) {
+    throw new AppError(404, 'Tax report not found', 'REPORT_NOT_FOUND');
+  }
+
+  const taxDate = new Date(report.taxMonth);
+  const year = taxDate.getUTCFullYear();
+  const month = String(taxDate.getUTCMonth() + 1).padStart(2, '0');
+  const merchantSuffix = (business.merchantId || business.id).slice(0, 6).toUpperCase();
+  const slipNumber = `SLIP-${year}${month}-${merchantSuffix}`;
+
+  const isPaid = report.paymentStatus === 'completed' || report.isLocked;
+  const latestPayment = report.payments && report.payments.length > 0 ? report.payments[0] : null;
+
+  let paymentData = null;
+  if (latestPayment) {
+    paymentData = {
+      paymentReference: latestPayment.transactionReference,
+      paymentDate: latestPayment.paymentDate,
+      paymentMethod: latestPayment.paymentMethod,
+      amountPaid: toNumber(latestPayment.amountPaid),
+      paymentStatus: latestPayment.paymentStatus,
+    };
+  } else if (isPaid) {
+    paymentData = {
+      paymentReference: `PMT-${merchantSuffix}-${year}${month}-STATUTORY`,
+      paymentDate: report.lockedAt || report.updatedAt || new Date(),
+      paymentMethod: 'Electronic Remittance',
+      amountPaid: toNumber(report.taxPayable),
+      paymentStatus: 'completed',
+    };
+  }
+
+  const pdfBuffer = await buildTaxSlipPdf({
+    slipNumber,
+    taxMonth: taxDate,
+    generatedAt: new Date(),
+    isFinalized: report.isFinalized,
+    isLocked: report.isLocked,
+    paymentStatus: report.paymentStatus,
+    business: {
+      businessName: business.businessName,
+      merchantId: business.merchantId,
+      ownerName: business.ownerName,
+      taxId: business.taxId,
+      address: business.address || [business.city, business.state].filter(Boolean).join(', ') || null,
+      logoUrl: business.logoUrl,
+    },
+    assessment: {
+      totalSales: toNumber(report.totalSales),
+      totalExpenses: toNumber(report.totalExpenses),
+      grossProfit: toNumber(report.grossProfit),
+      taxRate: toNumber(report.taxRate),
+      taxPayable: toNumber(report.taxPayable),
+      profitMargin: report.profitMargin ? toNumber(report.profitMargin) : null,
+    },
+    payment: paymentData,
+  });
+
+  const filename = `tax-slip-${business.merchantId || 'sme'}-${year}-${month}.pdf`;
+
+  logAudit({
+    userId,
+    businessId,
+    action: 'tax_slip.downloaded',
+    resourceType: 'monthly_tax_report',
+    resourceId: report.id,
+    newData: { reportId: report.id, year, month, slipNumber },
+  });
+
+  logger.info('Monthly tax slip downloaded', { businessId, reportId, slipNumber });
+
+  return { buffer: pdfBuffer, filename };
+}
+

@@ -2077,6 +2077,19 @@ describe('PayMyTax E2E', () => {
       expect(reportRes.body.data.paymentStatus).toBe('pending');
     });
 
+    it('GET /tax/reports/:id/slip → downloads official monthly tax assessment slip PDF', async () => {
+      const res = await request(app)
+        .get(`/api/v1/businesses/${businessId}/tax/reports/${testReportId}/slip`)
+        .set(auth());
+
+      expect(res.status).toBe(200);
+      expect(res.header['content-type']).toBe('application/pdf');
+      expect(res.header['content-disposition']).toContain('attachment');
+      expect(res.header['content-disposition']).toContain('.pdf');
+      expect(res.body).toBeInstanceOf(Buffer);
+      expect(res.body.length).toBeGreaterThan(500);
+    });
+
     it('POST /webhooks/paystack handles transfer.success for settlement payout', async () => {
       const transferRef = `PO-TEST-WEBHOOK-${Date.now()}`;
       // Create a pending settlement payout

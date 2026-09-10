@@ -12,12 +12,17 @@ import config from './config';
 import logger from './lib/logger';
 import prisma from './lib/prisma';
 import { registerReminderCron } from './jobs/reminders.cron';
+import { registerWalletReconciliationCron } from './jobs/wallet-reconciliation.cron';
+import { registerDomainEventListeners } from './core/events/register-listeners';
 
 /**
  * Start the server
  */
 const startServer = async () => {
   try {
+    // Register domain event listeners
+    registerDomainEventListeners();
+
     // Create Express app
     const app = createApp();
 
@@ -38,8 +43,9 @@ const startServer = async () => {
       // cron registration failure cannot crash the API.
       try {
         registerReminderCron();
+        registerWalletReconciliationCron();
       } catch (cronErr) {
-        logger.error('❌ Failed to register reminder cron', {
+        logger.error('❌ Failed to register scheduled cron jobs', {
           error: cronErr instanceof Error ? cronErr.message : String(cronErr),
         });
       }

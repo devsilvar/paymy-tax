@@ -5,14 +5,20 @@ import * as dvaService from '@/services/dva.service';
 import * as settlementService from '@/services/settlement.service';
 import {
   validateCustomerSchema,
+  setupVirtualAccountSchema,
   resolveSettlementSchema,
   connectSettlementSchema,
 } from '@/validators/dva.validator';
 
 export const setupVirtualAccount = asyncHandler(async (req: AuthenticatedRequest, res: Response) => {
+  const input = req.body && Object.keys(req.body).length > 0
+    ? setupVirtualAccountSchema.parse(req.body)
+    : undefined;
+
   const result = await dvaService.setupVirtualAccount(
     req.user!.userId,
-    req.params.businessId 
+    req.params.businessId,
+    input
   );
 
   res.status(200).json({

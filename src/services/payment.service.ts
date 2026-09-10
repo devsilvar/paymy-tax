@@ -13,6 +13,9 @@ import {
 } from '@/services/dva.service';
 import { createReminderOnce } from '@/services/reminder.service';
 import { formatNaira, formatTaxMonth } from '@/lib/format';
+import { toNumber } from '@/shared/helpers';
+import { eventBus } from '@/core/events';
+import { WalletService } from './wallet.service';
 
 // Fire a `payment_successful` reminder outside the caller's transaction.
 // Fire-and-forget — a reminder failure must never block payment confirmation.
@@ -392,6 +395,39 @@ export async function processWebhook(signature: string, rawBody: string) {
 
     const { reference, amount, paid_at, channel, gateway_response } = event.data;
 
+    // ─── Storefront Order Payments ──────────────────────────────
+    // When a storefront order is paid (card, paycode, or DVA), route to store order pipeline
+    if (reference && typeof reference === 'string' && reference.startsWith('ORD-')) {
+      const orderPayload = {
+        orderId: event.data.metadata?.orderId || reference,
+        storeId: event.data.metadata?.storeId || 'unknown-store',
+        businessId: event.data.metadata?.businessId || 'unknown-business',
+        userId: event.data.metadata?.userId || 'unknown-user',
+        amount: Number(amount) / 100,
+        orderNumber: reference,
+        customerName: `${event.data.customer?.first_name || ''} ${event.data.customer?.last_name || ''}`.trim() || 'Store Customer',
+        customerPhone: event.data.customer?.phone || '',
+        items: Array.isArray(event.data.metadata?.items) ? event.data.metadata.items : [],
+      };
+
+      logAudit({
+        businessId: orderPayload.businessId,
+        action: 'store.order_payment_received',
+        resourceType: 'order',
+        resourceId: orderPayload.orderId,
+        newData: { reference, amount: orderPayload.amount, channel, gateway_response },
+      });
+
+      logger.info('Storefront order payment received via webhook, emitting order.payment_confirmed', {
+        reference,
+        orderId: orderPayload.orderId,
+        amount: orderPayload.amount,
+      });
+
+      eventBus.emit('order.payment_confirmed', orderPayload);
+      return;
+    }
+
     const payment = await prisma.taxPayment.findFirst({
       where: { transactionReference: reference },
     });
@@ -459,6 +495,12 @@ export async function processWebhook(signature: string, rawBody: string) {
 
   if (event.event === 'charge.refunded') {
     const { reference } = event.data;
+
+    // Check if this was a storefront order refund
+    if (reference && typeof reference === 'string' && reference.startsWith('ORD-')) {
+      logger.info('Storefront order refund webhook received, acknowledged', { reference });
+      return;
+    }
 
     // Check if this was a tax payment
     const payment = await prisma.taxPayment.findFirst({
@@ -569,9 +611,12 @@ export async function processWebhook(signature: string, rawBody: string) {
             ...(transferCode ? [{ paystackTransferCode: transferCode }] : []),
           ],
         },
+        include: { business: { select: { userId: true, businessName: true } } },
       });
 
       if (payout) {
+        const wasCompleted = payout.status === 'completed';
+
         await prisma.settlementPayout.update({
           where: { id: payout.id },
           data: {
@@ -579,6 +624,27 @@ export async function processWebhook(signature: string, rawBody: string) {
             completedAt: new Date(),
           },
         });
+
+        // Settle wallet payout debit if not already settled
+        if (!wasCompleted && payout.business?.userId) {
+          await WalletService.settlePayoutDebit({
+            userId: payout.business.userId,
+            businessId: payout.businessId,
+            amount: payout.amount,
+            fee: 0,
+            reference: payout.transferReference,
+            linkedPayoutId: payout.id,
+            description: `Settlement payout completed to ${payout.destinationBankName}`,
+          });
+
+          // Post-commit event emission for webhook completion
+          eventBus.emit('payout.completed', {
+            userId: payout.business.userId,
+            payoutId: payout.id,
+            amount: toNumber(payout.amount),
+            reference: payout.transferReference,
+          });
+        }
 
         logAudit({
           businessId: payout.businessId,
@@ -627,9 +693,13 @@ export async function processWebhook(signature: string, rawBody: string) {
             ...(transferCode ? [{ paystackTransferCode: transferCode }] : []),
           ],
         },
+        include: { business: { select: { userId: true } } },
       });
 
       if (payout) {
+        const wasPendingOrProcessing =
+          payout.status === 'pending' || payout.status === 'processing';
+
         await prisma.settlementPayout.update({
           where: { id: payout.id },
           data: {
@@ -637,6 +707,15 @@ export async function processWebhook(signature: string, rawBody: string) {
             failureReason: reason,
           },
         });
+
+        // Release locked funds back to available wallet balance
+        if (wasPendingOrProcessing && payout.business?.userId) {
+          await WalletService.releaseLockedFunds({
+            userId: payout.business.userId,
+            amount: payout.amount,
+            fee: 0,
+          });
+        }
 
         logAudit({
           businessId: payout.businessId,

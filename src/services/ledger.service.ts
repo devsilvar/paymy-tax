@@ -2,11 +2,7 @@ import prisma from '@/lib/prisma';
 import logger from '@/lib/logger';
 import { verifyBusinessOwnership } from '@/lib/ownership';
 import { LedgerQueryInput } from '@/validators/ledger.validator';
-
-function toNumber(val: any): number {
-  if (val === null || val === undefined) return 0;
-  return typeof val === 'number' ? val : Number(val);
-}
+import { toNumber, SETTLED_SALE_STATUSES } from '@/shared/helpers';
 
 export interface UnifiedLedgerRow {
   id: string;
@@ -70,7 +66,7 @@ export async function getUnifiedLedger(
             source: 'bank_transfer',
             // Settled statuses only — 'confirmed' is canonical, 'completed'
             // is the legacy manual-entry status.
-            status: { in: ['confirmed', 'completed'] },
+            status: { in: SETTLED_SALE_STATUSES },
             transactionDate: { lt: fromDate },
           },
           _sum: { amount: true },
@@ -98,7 +94,7 @@ export async function getUnifiedLedger(
           where: {
             businessId,
             source: 'bank_transfer',
-            status: { in: ['confirmed', 'completed'] },
+            status: { in: SETTLED_SALE_STATUSES },
             settledViaSplit: true,
             transactionDate: { lt: fromDate },
           },
@@ -121,7 +117,7 @@ export async function getUnifiedLedger(
       const preSales = await prisma.salesTransaction.aggregate({
         where: {
           businessId,
-          status: { in: ['confirmed', 'completed'] },
+          status: { in: SETTLED_SALE_STATUSES },
           transactionDate: { lt: fromDate },
         },
         _sum: { amount: true },

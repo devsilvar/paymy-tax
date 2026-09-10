@@ -52,6 +52,8 @@ model User {
   auditLogs           AuditLog[]
   businesses          Business[]
   sessions            Session[]
+  walletBalance       WalletBalance?
+  walletTransactions  WalletTransaction[]
 
   @@index([email])
   @@index([phone])
@@ -114,6 +116,7 @@ model Business {
   payments             TaxPayment[]
   statements           TaxStatement[]
   settlementPayouts    SettlementPayout[]
+  walletTransactions   WalletTransaction[]
 
   @@index([userId])
   @@index([taxId])
@@ -165,7 +168,9 @@ model SalesTransaction {
   finalClassification String?                    @map("final_classification")
   isTaxable           Boolean                    @default(true) @map("is_taxable")
   classificationId    String?                    @map("classification_id")
+  dvaOrigin           Boolean                    @default(false) @map("dva_origin")
   invoice             Invoice?
+  walletTx            WalletTransaction?
   business            Business                   @relation(fields: [businessId], references: [id], onDelete: Cascade)
   classification      TransactionClassification? @relation(fields: [classificationId], references: [id], onDelete: SetNull)
   items               SaleLineItem[]
@@ -174,6 +179,7 @@ model SalesTransaction {
   @@index([businessId, transactionDate(sort: Desc)])
   @@index([referenceId])
   @@index([source])
+  @@index([businessId, dvaOrigin, status])
   @@index([businessId, needsVerification], map: "idx_sales_needs_verification")
   @@index([classificationId])
   @@index([businessId, status, isTaxable, transactionDate], map: "idx_sales_tax_calc")
@@ -627,9 +633,66 @@ model SettlementPayout {
   createdAt             DateTime      @default(now()) @map("created_at")
   updatedAt             DateTime      @updatedAt @map("updated_at")
   business              Business      @relation(fields: [businessId], references: [id], onDelete: Cascade)
+  walletTx              WalletTransaction?
 
   @@index([businessId])
   @@index([transferReference])
   @@index([status])
   @@map("settlement_payouts")
+}
+
+enum WalletTxType {
+  credit
+  debit
+  payout
+  fee
+  reversal
+}
+
+/// Central User Wallet - pooled treasury across all businesses owned by the user
+model WalletBalance {
+  id            String              @id @default(uuid())
+  userId        String              @unique @map("user_id")
+  balance       Decimal             @default(0.00) @db.Decimal(15, 2)
+  lockedBalance Decimal             @default(0.00) @map("locked_balance") @db.Decimal(15, 2)
+  currency      String              @default("NGN")
+  version       Int                 @default(0)
+  createdAt     DateTime            @default(now()) @map("created_at")
+  updatedAt     DateTime            @updatedAt @map("updated_at")
+  user          User                @relation(fields: [userId], references: [id], onDelete: Cascade)
+  transactions  WalletTransaction[]
+
+  @@map("wallet_balances")
+}
+
+/// Wallet transaction ledger - double-entry audit history of cash movements
+model WalletTransaction {
+  id             String            @id @default(uuid())
+  walletId       String            @map("wallet_id")
+  userId         String            @map("user_id")
+  businessId     String?           @map("business_id")
+  type           WalletTxType      @default(credit)
+  amount         Decimal           @db.Decimal(15, 2)
+  fee            Decimal           @default(0.00) @db.Decimal(15, 2)
+  netAmount      Decimal           @map("net_amount") @db.Decimal(15, 2)
+  balanceAfter   Decimal           @map("balance_after") @db.Decimal(15, 2)
+  reference      String            @unique
+  source         String
+  description    String?
+  idempotencyKey String?           @unique @map("idempotency_key")
+  metadata       Json?
+  linkedSaleId   String?           @unique @map("linked_sale_id")
+  linkedPayoutId String?           @unique @map("linked_payout_id")
+  createdAt      DateTime          @default(now()) @map("created_at")
+  wallet         WalletBalance     @relation(fields: [walletId], references: [id], onDelete: Cascade)
+  user           User              @relation(fields: [userId], references: [id], onDelete: Cascade)
+  business       Business?         @relation(fields: [businessId], references: [id], onDelete: SetNull)
+  linkedSale     SalesTransaction? @relation(fields: [linkedSaleId], references: [id], onDelete: SetNull)
+  linkedPayout   SettlementPayout? @relation(fields: [linkedPayoutId], references: [id], onDelete: SetNull)
+
+  @@index([userId, createdAt(sort: Desc)])
+  @@index([businessId])
+  @@index([walletId])
+  @@index([reference])
+  @@map("wallet_transactions")
 }

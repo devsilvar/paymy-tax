@@ -7,6 +7,7 @@ import { buildInvoicePdf } from '@/services/invoice.pdf';
 import { createReminderOnce } from '@/services/reminder.service';
 import { formatNaira, formatDateISO } from '@/lib/format';
 import { verifyBusinessOwnership } from '@/lib/ownership';
+import { toNumber, assertMonthNotLocked } from '@/shared/helpers';
 import {
   CreateInvoiceInput,
   UpdateInvoiceInput,
@@ -55,10 +56,6 @@ function maybeFireOverdueReminderOnSend(invoice: {
 
 // ─── Helpers ────────────────────────────────────────────────
 
-function toNumber(v: unknown): number {
-  if (v === null || v === undefined) return 0;
-  return typeof v === 'number' ? v : Number(v);
-}
 
 /** Round to 2 decimals (money). */
 function money(n: number): number {
@@ -480,43 +477,6 @@ export async function deleteInvoice(
 
 // ─── Lifecycle actions ──────────────────────────────────────
 
-/**
- * Guard: tax month containing `date` must not be finalized or locked, because
- * marking an invoice paid creates a SalesTransaction in that month — which
- * would silently bypass the finalization freeze.
- */
-async function assertMonthNotLocked(
-  businessId: string,
-  date: Date,
-  db: TxClient | typeof prisma,
-) {
-  // UTC — taxMonth is written in UTC by calculateTax; local-tz derivation
-  // would miss the row on UTC+ hosts and let an invoice be marked paid in
-  // a locked month.
-  const monthStart = new Date(
-    Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), 1)
-  );
-
-  const report = await db.monthlyTaxReport.findUnique({
-    where: { businessId_taxMonth: { businessId, taxMonth: monthStart } },
-    select: { isLocked: true, isFinalized: true },
-  });
-
-  if (report?.isLocked) {
-    throw new AppError(
-      423,
-      'This month is locked — tax has been paid. Cannot record a payment against it.',
-      'PERIOD_LOCKED',
-    );
-  }
-  if (report?.isFinalized) {
-    throw new AppError(
-      423,
-      'This month is finalized. Un-finalize it before recording a payment.',
-      'PERIOD_FINALIZED',
-    );
-  }
-}
 
 /**
  * Mark an invoice as sent. Transitions: draft → sent.

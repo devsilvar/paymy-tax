@@ -2,6 +2,7 @@ import PDFDocument from 'pdfkit';
 import { Decimal } from '@prisma/client/runtime/library';
 import { config } from '@/config';
 import { fetchLogoForPdf } from '@/lib/pdf-utils';
+import { toNumber } from '@/shared/helpers';
 
 
 // ─── Design tokens ──────────────────────────────────────────
@@ -36,11 +37,6 @@ const PAGE_WIDTH = RIGHT - LEFT;
 const RADIUS = 6;
 
 // ─── Helpers ────────────────────────────────────────────────
-
-function toNumber(v: Decimal | number | null | undefined): number {
-  if (v === null || v === undefined) return 0;
-  return typeof v === 'number' ? v : v.toNumber();
-}
 
 // IMPORTANT: 'Helvetica' is one of PDF's 14 built-in standard fonts.
 // Its character set (WinAnsi) does NOT include the Naira sign (₦, U+20A6),

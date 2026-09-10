@@ -11,11 +11,7 @@ import {
   DvaTransferReceiptData,
   SalesReceiptData,
 } from './receipt.pdf';
-
-function toNumber(val: any): number {
-  if (val === null || val === undefined) return 0;
-  return typeof val === 'number' ? val : Number(val);
-}
+import { toNumber } from '@/shared/helpers';
 
 /**
  * Generate a deterministic or sequential receipt number.
@@ -140,6 +136,9 @@ export async function getDvaTransferReceipt(
       ownerName: business.ownerName,
       merchantId: business.merchantId,
       taxId: business.taxId,
+      address: business.address && business.city 
+        ? `${business.address}, ${business.city}${business.state ? ', ' + business.state : ''}` 
+        : business.address || null,
       logoUrl: business.logoUrl,
     },
   };
@@ -164,7 +163,7 @@ export async function getDvaTransferReceipt(
 
 
 /**
- * Generates a universal PDF receipt for ANY sales transaction (bank transfer, cash, POS, invoice, etc.)
+ * Generates an official itemized PDF receipt for ANY sales transaction (cash, POS, online, invoice, etc.)
  */
 export async function getSalesReceipt(
   userId: string,
@@ -175,6 +174,14 @@ export async function getSalesReceipt(
 
   const sale = await prisma.salesTransaction.findUnique({
     where: { id: saleId },
+    include: {
+      items: { orderBy: { sortOrder: 'asc' } },
+      invoice: {
+        include: {
+          lines: { orderBy: { sortOrder: 'asc' } },
+        },
+      },
+    },
   });
 
   if (!sale || sale.businessId !== businessId) {
@@ -190,10 +197,62 @@ export async function getSalesReceipt(
     paycode: 'Paystack Paycode',
     pos: 'POS Terminal',
     online_store: 'Online Store Payment',
-    manual: 'Manual Entry / Cash',
+    manual: 'Cash / Manual Entry',
     cash: 'Cash Payment',
     invoice: 'Invoice Payment',
   };
+
+  // Build items hierarchy
+  let items: Array<{ name: string; quantity: number; unitPrice: number; lineTotal: number }> = [];
+  let subtotal = toNumber(sale.amount);
+  let discount = 0;
+  let vatRate = 0;
+  let vatAmount = 0;
+  let customerPhone: string | null = null;
+  let customerEmail: string | null = null;
+  let customerAddress: string | null = null;
+
+  if (sale.items && sale.items.length > 0) {
+    items = sale.items.map((item) => ({
+      name: item.name,
+      quantity: toNumber(item.quantity),
+      unitPrice: toNumber(item.unitPrice),
+      lineTotal: toNumber(item.lineTotal),
+    }));
+    subtotal = items.reduce((sum, it) => sum + it.lineTotal, 0);
+  } else if (sale.invoice && sale.invoice.lines && sale.invoice.lines.length > 0) {
+    items = sale.invoice.lines.map((line) => ({
+      name: line.description,
+      quantity: toNumber(line.quantity),
+      unitPrice: toNumber(line.unitPrice),
+      lineTotal: toNumber(line.lineTotal),
+    }));
+    subtotal = toNumber(sale.invoice.subtotal);
+    discount = toNumber(sale.invoice.discount);
+    vatRate = toNumber(sale.invoice.vatRate);
+    vatAmount = toNumber(sale.invoice.vatAmount);
+    customerPhone = sale.invoice.customerPhone;
+    customerEmail = sale.invoice.customerEmail;
+    customerAddress = sale.invoice.customerAddress;
+  } else {
+    // Single sale item fallback
+    const singleName = sale.description && sale.description.trim().length > 0
+      ? sale.description.trim()
+      : 'General Merchandise / Sales';
+    const amountNum = toNumber(sale.amount);
+    items = [
+      {
+        name: singleName,
+        quantity: 1,
+        unitPrice: amountNum,
+        lineTotal: amountNum,
+      },
+    ];
+    subtotal = amountNum;
+  }
+
+  const customerName = sale.customerName || sale.invoice?.customerName || null;
+  const invoiceNumber = sale.source === 'invoice' ? (sale.referenceId || sale.invoice?.invoiceNumber || null) : null;
 
   const receiptData: import('./receipt.pdf').SalesReceiptData = {
     receiptNumber,
@@ -202,9 +261,17 @@ export async function getSalesReceipt(
     amount: toNumber(sale.amount),
     source: sale.source as any,
     sourceLabel: sourceLabels[sale.source] || sale.source,
-    customerName: sale.customerName,
+    customerName,
+    customerPhone,
+    customerEmail,
+    customerAddress,
     description: sale.description,
-    invoiceNumber: sale.source === 'invoice' ? sale.referenceId : null,
+    invoiceNumber,
+    items,
+    subtotal,
+    discount,
+    vatRate,
+    vatAmount,
     business: {
       businessName: business.businessName,
       ownerName: business.ownerName,
@@ -227,10 +294,10 @@ export async function getSalesReceipt(
     action: 'receipt.downloaded',
     resourceType: 'sales_receipt',
     resourceId: sale.id,
-    newData: { receiptNumber, source: sale.source },
+    newData: { receiptNumber, source: sale.source, itemCount: items.length },
   });
 
-  logger.info('Sales receipt generated', { saleId, receiptNumber, source: sale.source, businessId });
+  logger.info('Sales receipt generated', { saleId, receiptNumber, source: sale.source, itemCount: items.length, businessId });
 
   return { buffer, filename, receiptNumber };
 }

@@ -11,6 +11,8 @@ router.get('/reports', taxController.listReports);
 router.get('/reports/:id', taxController.getReport);
 router.post('/reports/:id/finalize', taxController.finalize);
 router.post('/reports/:id/unfinalize', taxController.unfinalize);
+router.post('/reports/:id/reset', taxController.reset);
+router.get('/reports/:id/slip', taxController.downloadTaxSlip);
 router.get('/dashboard', taxController.dashboard);
 router.get('/analytics', taxController.analytics);
 

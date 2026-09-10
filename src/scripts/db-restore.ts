@@ -165,6 +165,35 @@ async function runRestore() {
     });
   }
 
+  // Audit logs are captured by db-backup.ts but were historically never
+  // restored — losing the compliance trail unnecessarily. Restore them in
+  // chunks to stay under Postgres's 65k bind-parameter limit.
+  if (data.auditLogs?.length) {
+    console.log(`⏳ Restoring ${data.auditLogs.length} audit logs...`);
+    const CHUNK = 500;
+    for (let i = 0; i < data.auditLogs.length; i += CHUNK) {
+      await prisma.auditLog.createMany({
+        data: data.auditLogs.slice(i, i + CHUNK),
+        skipDuplicates: true,
+      });
+    }
+  }
+
+  // The dva_origin backfill from migration 20260909180000 ran AFTER this
+  // backup was taken, so backed-up sales rows predate the column. Prisma
+  // inserts will leave dva_origin at its DB default (false). Re-apply the
+  // migration's backfill predicate so DVA-captured sales keep their origin
+  // flag (exact same predicate as the migration SQL).
+  const dvaBackfill = (await prisma.$executeRawUnsafe(
+    `UPDATE "sales_transactions"
+     SET "dva_origin" = true
+     WHERE (metadata->>'channel' = 'dva')
+        OR ("source" = 'bank_transfer' AND metadata->>'autoRecorded' = 'true')`
+  )) as number;
+  if (dvaBackfill > 0) {
+    console.log(`🔁 Re-applied dva_origin backfill on ${dvaBackfill} sales transactions.`);
+  }
+
   const elapsed = ((Date.now() - startTime) / 1000).toFixed(2);
   console.log(`✅ Database successfully restored from ${path.basename(targetFile)}!`);
   console.log(`⏱️ Completed in ${elapsed}s.`);

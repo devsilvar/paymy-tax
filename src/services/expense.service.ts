@@ -4,47 +4,7 @@ import { AppError } from '@/middleware/errorHandler';
 import { logAudit } from '@/lib/audit';
 import { CreateExpenseInput, UpdateExpenseInput } from '@/validators/expense.validator';
 import { verifyBusinessOwnership } from '@/lib/ownership';
-
-// ─── Helpers ────────────────────────────────────────────────
-
-async function assertMonthNotLocked(
-  businessId: string,
-  expenseDate: Date,
-  db: TxClient | typeof prisma = prisma
-) {
-  // UTC — taxMonth is written in UTC by calculateTax; using local-tz
-  // derivation here would miss the row on UTC+ hosts and silently allow
-  // edits to a locked/finalized month.
-  const monthStart = new Date(
-    Date.UTC(expenseDate.getUTCFullYear(), expenseDate.getUTCMonth(), 1)
-  );
-
-  const report = await db.monthlyTaxReport.findUnique({
-    where: {
-      businessId_taxMonth: {
-        businessId,
-        taxMonth: monthStart,
-      },
-    },
-    select: { isLocked: true, isFinalized: true },
-  });
-
-  if (report?.isLocked) {
-    throw new AppError(
-      423,
-      'This month is locked — tax has been paid. No edits allowed.',
-      'PERIOD_LOCKED'
-    );
-  }
-
-  if (report?.isFinalized) {
-    throw new AppError(
-      423,
-      'This month is finalized. Un-finalize it before editing expenses.',
-      'PERIOD_FINALIZED'
-    );
-  }
-}
+import { assertMonthNotLocked, SETTLED_SALE_STATUSES } from '@/shared/helpers';
 
 // ─── CRUD ───────────────────────────────────────────────────
 
@@ -344,7 +304,7 @@ export async function getDailySummary(
       where: {
         businessId,
         transactionDate: dateFilter,
-        status: { in: ['confirmed', 'completed'] },
+        status: { in: SETTLED_SALE_STATUSES },
       },
       _sum: { amount: true },
     }),
@@ -431,7 +391,7 @@ export async function getMonthlySummary(
       where: {
         businessId,
         transactionDate: dateFilter,
-        status: { in: ['confirmed', 'completed'] },
+        status: { in: SETTLED_SALE_STATUSES },
       },
       _sum: { amount: true },
     }),

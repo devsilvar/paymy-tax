@@ -11,13 +11,9 @@ import { fetchLogoForPdf } from '@/lib/pdf-utils';
 import { buildLedgerStatementPdf } from './ledger-statement.pdf';
 import { getUnifiedLedger } from './ledger.service';
 import { sendEmail } from '@/lib/email';
+import { toNumber } from '@/shared/helpers';
 
 // ─── Helpers ────────────────────────────────────────────────
-
-function toNumber(val: Decimal | number | null): number {
-  if (val === null) return 0;
-  return typeof val === 'number' ? val : val.toNumber();
-}
 
 function formatCurrency(amount: number): string {
   return `₦${amount.toLocaleString('en-NG', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;

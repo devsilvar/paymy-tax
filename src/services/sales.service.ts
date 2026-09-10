@@ -5,6 +5,12 @@ import { logAudit } from '@/lib/audit';
 import { Prisma } from '@prisma/client';
 import { CreateSaleInput, UpdateSaleInput, SalesOverviewQueryInput, SaleLineItemInput } from '@/validators/sales.validator';
 import { verifyBusinessOwnership } from '@/lib/ownership';
+import {
+  toNumber,
+  assertMonthNotLocked,
+  SETTLED_SALE_STATUSES,
+  TAXABLE_SALES_WHERE,
+} from '@/shared/helpers';
 
 
 // ─── Helpers ────────────────────────────────────────────────
@@ -36,49 +42,6 @@ export function computeSaleTotal(items: SaleLineItemInput[]): {
     };
   });
   return { total, lines };
-}
-
-/**
- * Check if the month containing `transactionDate` is locked.
- * A locked month means a tax report has been paid — no edits allowed.
- */
-async function assertMonthNotLocked(
-  businessId: string,
-  transactionDate: Date,
-  db: TxClient | typeof prisma = prisma
-) {
-  // UTC — must match calculateTax's UTC taxMonth so the unique-key lookup
-  // hits. transactionDate is itself @db.Date (already UTC on read), so we
-  // derive year/month in UTC and rebuild the first-of-month in UTC.
-  const monthStart = new Date(
-    Date.UTC(transactionDate.getUTCFullYear(), transactionDate.getUTCMonth(), 1)
-  );
-
-  const report = await db.monthlyTaxReport.findUnique({
-    where: {
-      businessId_taxMonth: {
-        businessId,
-        taxMonth: monthStart,
-      },
-    },
-    select: { isLocked: true, isFinalized: true },
-  });
-
-  if (report?.isLocked) {
-    throw new AppError(
-      423,
-      'This month is locked — tax has been paid. No edits allowed.',
-      'PERIOD_LOCKED'
-    );
-  }
-
-  if (report?.isFinalized) {
-    throw new AppError(
-      423,
-      'This month is finalized. Un-finalize it before editing sales.',
-      'PERIOD_FINALIZED'
-    );
-  }
 }
 
 // ─── CRUD ───────────────────────────────────────────────────
@@ -411,14 +374,24 @@ export async function getMonthlySummary(
   const monthStart = new Date(year, month - 1, 1);
   const monthEnd = new Date(year, month, 0); // last day of month
 
-  const [aggregation, bySource, count] = await Promise.all([
+  const [aggregation, taxableAggregation, bySource, count] = await Promise.all([
     prisma.salesTransaction.aggregate({
       where: {
         businessId,
         transactionDate: { gte: monthStart, lte: monthEnd },
         // Settled statuses only — include both the canonical 'confirmed' and
-        // the legacy 'completed' so the summary matches the tax engine.
-        status: { in: ['confirmed', 'completed'] },
+        // the legacy 'completed'
+        status: { in: SETTLED_SALE_STATUSES },
+      },
+      _sum: { amount: true },
+    }),
+
+    // Taxable settled sales — aligns directly with tax engine calculations
+    prisma.salesTransaction.aggregate({
+      where: {
+        businessId,
+        transactionDate: { gte: monthStart, lte: monthEnd },
+        ...TAXABLE_SALES_WHERE,
       },
       _sum: { amount: true },
     }),
@@ -429,7 +402,7 @@ export async function getMonthlySummary(
       where: {
         businessId,
         transactionDate: { gte: monthStart, lte: monthEnd },
-        status: { in: ['confirmed', 'completed'] },
+        status: { in: SETTLED_SALE_STATUSES },
       },
       _sum: { amount: true },
       _count: true,
@@ -444,6 +417,7 @@ export async function getMonthlySummary(
   ]);
 
   const totalSales = aggregation._sum.amount ?? 0;
+  const taxableSales = taxableAggregation._sum.amount ?? 0;
 
   const sourceBreakdown = bySource.map((entry) => ({
     source: entry.source,
@@ -455,6 +429,7 @@ export async function getMonthlySummary(
     month,
     year,
     totalSales,
+    taxableSales,
     transactionCount: count,
     sourceBreakdown,
   };
@@ -502,7 +477,7 @@ export async function getDailySummary(
     transactionDate: { gte: dayStart, lte: dayEnd },
     // Settled statuses only — same rule as getMonthlySummary ('confirmed'
     // is canonical, 'completed' is legacy). See SALES_SUMMARY_API_FIX.md.
-    status: { in: ['confirmed', 'completed'] },
+    status: { in: SETTLED_SALE_STATUSES },
   };
 
   const [aggregation, bySource, transactions] = await Promise.all([
@@ -731,6 +706,13 @@ export async function verifySale(
     },
   });
 
+  if (targetBusinessId) {
+    await db.walletTransaction.updateMany({
+      where: { linkedSaleId: saleId },
+      data: { businessId: targetBusinessId },
+    });
+  }
+
   logAudit({
     userId,
     businessId: targetBusinessId || businessId,
@@ -774,13 +756,6 @@ export async function reclassifySale(
 
 // ─── Financial Timeline & Overview ───────────────────────────
 
-function toNumber(val: unknown): number {
-  if (val === null || val === undefined) return 0;
-  if (typeof val === 'number') return val;
-  if (typeof val === 'string') return parseFloat(val) || 0;
-  if (typeof (val as any).toNumber === 'function') return (val as any).toNumber();
-  return Number(val) || 0;
-}
 
 function pctDelta(curr: number, prior: number): number | null {
   if (prior === 0) return curr === 0 ? 0 : null;
@@ -931,7 +906,7 @@ export async function getSalesAndExpensesOverview(
           // 'confirmed' is the canonical settled status (import/DVA/invoice-paid
           // rows); 'completed' is the legacy manual-entry status. Count both,
           // exclude pending/reversed/disputed.
-          where: { businessId, status: { in: ['confirmed', 'completed'] }, isTaxable: true },
+          where: { businessId, ...TAXABLE_SALES_WHERE },
           orderBy: { transactionDate: 'asc' },
           select: { transactionDate: true },
         }),
@@ -990,12 +965,7 @@ export async function getSalesAndExpensesOverview(
     prisma.salesTransaction.findMany({
       where: {
         businessId,
-        // 'confirmed' is the canonical settled status (import/DVA/invoice-paid
-        // rows); 'completed' is the legacy manual-entry status. Counting only
-        // 'completed' here made the dashboard chart exclude most real sales
-        // (the Sales page list has no status filter, hence the mismatch).
-        status: { in: ['confirmed', 'completed'] },
-        isTaxable: true,
+        ...TAXABLE_SALES_WHERE,
         transactionDate: { gte: from, lte: to },
       },
       select: {
@@ -1020,8 +990,7 @@ export async function getSalesAndExpensesOverview(
       ? prisma.salesTransaction.aggregate({
           where: {
             businessId,
-            status: { in: ['confirmed', 'completed'] },
-            isTaxable: true,
+            ...TAXABLE_SALES_WHERE,
             transactionDate: { gte: prevFrom, lte: prevTo },
           },
           _sum: { amount: true },

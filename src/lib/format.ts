@@ -2,14 +2,7 @@
 // has its own helpers in pages. Keep these dependency-free and synchronous.
 
 import type { Prisma } from '@prisma/client';
-
-type Numeric = number | string | Prisma.Decimal;
-
-function toNumber(n: Numeric): number {
-  if (typeof n === 'number') return n;
-  if (typeof n === 'string') return Number(n);
-  return Number(n.toString());
-}
+import { toNumber, Numeric } from '@/shared/helpers';
 
 export function formatNaira(amount: Numeric): string {
   return `₦${toNumber(amount).toLocaleString('en-NG', {
