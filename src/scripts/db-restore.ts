@@ -2,6 +2,7 @@ import 'dotenv/config';
 import { PrismaClient } from '@prisma/client';
 import * as fs from 'fs';
 import * as path from 'path';
+import { WalletService } from '../services/wallet/wallet.service';
 
 const prisma = new PrismaClient();
 
@@ -180,6 +181,28 @@ async function runRestore() {
     }
   }
 
+  if (data.walletBalances?.length) {
+    console.log(`⏳ Restoring ${data.walletBalances.length} wallet balances...`);
+    for (const wb of data.walletBalances) {
+      await prisma.walletBalance.upsert({
+        where: { id: wb.id },
+        create: wb,
+        update: wb,
+      });
+    }
+  }
+
+  if (data.walletTransactions?.length) {
+    console.log(`⏳ Restoring ${data.walletTransactions.length} wallet transactions...`);
+    const CHUNK = 500;
+    for (let i = 0; i < data.walletTransactions.length; i += CHUNK) {
+      await prisma.walletTransaction.createMany({
+        data: data.walletTransactions.slice(i, i + CHUNK),
+        skipDuplicates: true,
+      });
+    }
+  }
+
   // The dva_origin backfill from migration 20260909180000 ran AFTER this
   // backup was taken, so backed-up sales rows predate the column. Prisma
   // inserts will leave dva_origin at its DB default (false). Re-apply the
@@ -193,6 +216,13 @@ async function runRestore() {
   )) as number;
   if (dvaBackfill > 0) {
     console.log(`🔁 Re-applied dva_origin backfill on ${dvaBackfill} sales transactions.`);
+  }
+
+  // Auto-sync wallet ledger: ensure any settled DVA sales are credited in wallet balances
+  console.log('🔄 Reconciling wallet balances against settled DVA sales...');
+  const allUsers = await prisma.user.findMany({ select: { id: true } });
+  for (const u of allUsers) {
+    await WalletService.syncUncreditedDvaSales(u.id);
   }
 
   const elapsed = ((Date.now() - startTime) / 1000).toFixed(2);

@@ -18,7 +18,7 @@ import {
 } from '@/shared/helpers';
 import { WalletService } from '@/services/wallet.service';
 import { eventBus } from '@/core/events/event-bus';
-import { getPayoutPreview } from '@/services/settlement.service';
+import { getPayoutPreview } from '@/services/settlement/payout-preview.service';
 
 /**
  * Creates a withdrawal request (admin-approval workflow).

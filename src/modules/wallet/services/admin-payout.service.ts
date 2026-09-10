@@ -8,7 +8,7 @@ import { formatNaira } from '@/lib/format';
 import { toNumber } from '@/shared/helpers';
 import { WalletService } from '@/services/wallet.service';
 import { eventBus } from '@/core/events/event-bus';
-import { getPayoutPreview } from '@/services/settlement.service';
+import { getPayoutPreview } from '@/services/settlement/payout-preview.service';
 
 /**
  * ADMIN: List withdrawal requests (queue) — paginated, optional status filter.

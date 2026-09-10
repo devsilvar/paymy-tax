@@ -17,7 +17,7 @@ import { prisma } from '../lib/prisma';
 import logger from '../lib/logger';
 import { config } from '../config';
 import { toNumber } from '../shared/helpers/number';
-import { getPayoutPreview } from '../services/settlement.service';
+import { getPayoutPreview } from '../services/settlement/payout-preview.service';
 
 // Arbitrary 32-bit int. Registered in lock key directory:
 //   947362 — daily reminder sweep (reminders.cron.ts)

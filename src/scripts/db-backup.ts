@@ -33,6 +33,8 @@ async function runBackup() {
     settlementPayouts,
     paystackWebhookEvents,
     auditLogs,
+    walletBalances,
+    walletTransactions,
   ] = await Promise.all([
     prisma.user.findMany(),
     prisma.business.findMany(),
@@ -52,6 +54,8 @@ async function runBackup() {
     prisma.settlementPayout.findMany(),
     prisma.paystackWebhookEvent.findMany(),
     prisma.auditLog.findMany(),
+    prisma.walletBalance.findMany(),
+    prisma.walletTransaction.findMany(),
   ]);
 
   const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
@@ -93,6 +97,8 @@ async function runBackup() {
       settlementPayouts,
       paystackWebhookEvents,
       auditLogs,
+      walletBalances,
+      walletTransactions,
     },
   };
 

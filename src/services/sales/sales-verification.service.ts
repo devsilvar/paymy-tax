@@ -53,6 +53,14 @@ const LEGACY_CLASSIFICATION_ALIASES: Record<string, string> = {
   sales_revenue: 'Product Sale',
   service_revenue: 'Service Revenue',
   business_income: 'Product Sale',
+  transfer: 'Transfer Between Accounts',
+  transfer_between_accounts: 'Transfer Between Accounts',
+  loan: 'Loan Received',
+  gift: 'Gift Received',
+  grant: 'Grant Received',
+  capital: 'Capital Injection',
+  capital_injection: 'Capital Injection',
+  other: 'Other',
 };
 
 function slugifyClassification(value: string): string {
@@ -76,12 +84,18 @@ export async function verifySale(
 
   const sale = await db.salesTransaction.findUnique({ where: { id: saleId } });
 
-  if (!sale || sale.businessId !== businessId) {
+  if (!sale) {
     throw new AppError(404, 'Sale not found', 'SALE_NOT_FOUND');
   }
 
+  // If sale belongs to another business owned by the same user, verify ownership of that business
+  if (sale.businessId !== businessId) {
+    await verifyBusinessOwnership(userId, sale.businessId, db);
+  }
+
   if (!sale.needsVerification) {
-    throw new AppError(400, 'Sale is already verified', 'ALREADY_VERIFIED');
+    // Idempotent: already verified
+    return sale;
   }
 
   // Handle business reassignment if specified

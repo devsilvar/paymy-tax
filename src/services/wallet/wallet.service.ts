@@ -2,6 +2,7 @@ import { Prisma, WalletTxType, WalletBalance, WalletTransaction } from '@prisma/
 import axios from 'axios';
 import prisma, { TxClient } from '@/lib/prisma';
 import { toNumber } from '@/shared/helpers/number';
+import { SETTLED_SALE_STATUSES } from '@/shared/helpers';
 import { AppError } from '@/middleware/errorHandler';
 import logger from '@/lib/logger';
 import { config } from '@/config';
@@ -106,6 +107,7 @@ export class WalletService {
    * Fast O(1) balance read for a user.
    */
   static async getWalletBalance(userId: string, tx?: TxClient): Promise<WalletBalanceDto> {
+    await this.syncUncreditedDvaSales(userId, tx);
     const wallet = await this.getOrCreateWallet(userId, tx);
     const balance = toNumber(wallet.balance);
     const lockedBalance = toNumber(wallet.lockedBalance);
@@ -121,6 +123,71 @@ export class WalletService {
       version: wallet.version,
       lastSyncedAt: wallet.updatedAt,
     };
+  }
+
+  /**
+   * Self-healing sync: finds any settled DVA sales that have not been credited to
+   * the central user wallet (e.g. following a database restore or pre-migration history)
+   * and credits them atomically into the wallet ledger.
+   */
+  static async syncUncreditedDvaSales(userId: string, tx?: TxClient): Promise<number> {
+    const db = tx ?? prisma;
+    const userBusinesses = await db.business.findMany({
+      where: { userId },
+      select: { id: true },
+    });
+    if (userBusinesses.length === 0) return 0;
+
+    const bizIds = userBusinesses.map((b) => b.id);
+    const uncreditedSales = await db.salesTransaction.findMany({
+      where: {
+        businessId: { in: bizIds },
+        source: 'bank_transfer',
+        dvaOrigin: true,
+        status: { in: SETTLED_SALE_STATUSES },
+        walletTx: null,
+      },
+      orderBy: { createdAt: 'asc' },
+    });
+
+    if (uncreditedSales.length === 0) return 0;
+
+    let syncedCount = 0;
+    for (const sale of uncreditedSales) {
+      const amountNum = toNumber(sale.amount);
+      const feeNaira = Math.round(Math.min((amountNum * 1.0) / 100, 300) * 100) / 100;
+      const netRetained =
+        sale.settledViaSplit && sale.platformRetained
+          ? toNumber(sale.platformRetained)
+          : Math.max(0, Math.round((amountNum - feeNaira) * 100) / 100);
+
+      const reference = sale.referenceId || `DVA-SYNC-${sale.id}`;
+
+      await this.creditWallet(
+        {
+          userId,
+          businessId: sale.businessId,
+          amount: amountNum,
+          fee: feeNaira,
+          netAmount: netRetained,
+          reference,
+          source: 'dva',
+          description: `DVA bank transfer (restored/synced)`,
+          linkedSaleId: sale.id,
+          metadata: {
+            synced: true,
+            originalSaleDate: sale.transactionDate,
+          },
+        },
+        db
+      );
+      syncedCount++;
+    }
+
+    if (syncedCount > 0) {
+      logger.info(`[WALLET_AUTO_SYNC] Synced ${syncedCount} previously uncredited DVA sales for user ${userId}`);
+    }
+    return syncedCount;
   }
 
   /**
@@ -249,13 +316,25 @@ export class WalletService {
         await (db as any).$queryRaw`SELECT id FROM wallet_balances WHERE user_id = ${params.userId} FOR UPDATE`;
       }
 
-      const wallet = await db.walletBalance.findUnique({ where: { userId: params.userId } });
+      let wallet = await db.walletBalance.findUnique({ where: { userId: params.userId } });
       if (!wallet) throw new AppError(404, 'Wallet not found', 'WALLET_NOT_FOUND');
 
-      const available = toNumber(wallet.balance) - toNumber(wallet.lockedBalance);
+      let available = toNumber(wallet.balance) - toNumber(wallet.lockedBalance);
       const amountNum = toNumber(params.amount);
       const feeNum = toNumber(params.fee ?? 0);
       const totalDebit = amountNum + feeNum;
+
+      // Auto-heal / self-reconcile: If available balance is less than required,
+      // check if there are uncredited settled DVA sales (e.g. from restored DB or pre-migration history)
+      if (available < totalDebit) {
+        const synced = await this.syncUncreditedDvaSales(params.userId, db);
+        if (synced > 0) {
+          wallet = await db.walletBalance.findUnique({ where: { userId: params.userId } });
+          if (wallet) {
+            available = toNumber(wallet.balance) - toNumber(wallet.lockedBalance);
+          }
+        }
+      }
 
       if (available < totalDebit) {
         throw new AppError(
