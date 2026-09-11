@@ -108,6 +108,7 @@ export class WalletService {
    */
   static async getWalletBalance(userId: string, tx?: TxClient): Promise<WalletBalanceDto> {
     await this.syncUncreditedDvaSales(userId, tx);
+    await this.reconcileHistoricalDvaFees(userId, tx);
     const wallet = await this.getOrCreateWallet(userId, tx);
     const balance = toNumber(wallet.balance);
     const lockedBalance = toNumber(wallet.lockedBalance);
@@ -156,10 +157,11 @@ export class WalletService {
     for (const sale of uncreditedSales) {
       const amountNum = toNumber(sale.amount);
       const feeNaira = Math.round(Math.min((amountNum * 1.0) / 100, 300) * 100) / 100;
+      // Boss's rule: 100% credited to user; company absorbs Paystack fee
       const netRetained =
         sale.settledViaSplit && sale.platformRetained
           ? toNumber(sale.platformRetained)
-          : Math.max(0, Math.round((amountNum - feeNaira) * 100) / 100);
+          : amountNum;
 
       const reference = sale.referenceId || `DVA-SYNC-${sale.id}`;
 
@@ -168,7 +170,7 @@ export class WalletService {
           userId,
           businessId: sale.businessId,
           amount: amountNum,
-          fee: feeNaira,
+          fee: 0,
           netAmount: netRetained,
           reference,
           source: 'dva',
@@ -176,6 +178,7 @@ export class WalletService {
           linkedSaleId: sale.id,
           metadata: {
             synced: true,
+            paystackFeeNaira: feeNaira,
             originalSaleDate: sale.transactionDate,
           },
         },
@@ -188,6 +191,74 @@ export class WalletService {
       logger.info(`[WALLET_AUTO_SYNC] Synced ${syncedCount} previously uncredited DVA sales for user ${userId}`);
     }
     return syncedCount;
+  }
+
+  /**
+   * Reconciles historical DVA transactions where 1% fee was subtracted from deposit
+   * to ensure full 100% credit per leadership's policy.
+   */
+  static async reconcileHistoricalDvaFees(userId: string, tx?: TxClient): Promise<number> {
+    const db = tx ?? prisma;
+    const userBusinesses = await db.business.findMany({
+      where: { userId },
+      select: { id: true },
+    });
+    if (userBusinesses.length === 0) return 0;
+
+    const bizIds = userBusinesses.map((b) => b.id);
+    const settledDvaSales = await db.salesTransaction.findMany({
+      where: {
+        businessId: { in: bizIds },
+        source: 'bank_transfer',
+        dvaOrigin: true,
+        status: { in: SETTLED_SALE_STATUSES },
+        walletTx: { isNot: null },
+      },
+      include: {
+        walletTx: true,
+      },
+    });
+
+    let totalAdjustment = 0;
+    for (const sale of settledDvaSales) {
+      if (!sale.walletTx) continue;
+      const saleAmount = toNumber(sale.amount);
+      const creditedNet = toNumber(sale.walletTx.netAmount);
+      // If the sale was plain (non-split) and was credited less than saleAmount
+      if (!sale.settledViaSplit && creditedNet < saleAmount) {
+        const diff = Math.round((saleAmount - creditedNet) * 100) / 100;
+        if (diff > 0) {
+          totalAdjustment += diff;
+          await db.walletTransaction.update({
+            where: { id: sale.walletTx.id },
+            data: {
+              fee: new Prisma.Decimal(0),
+              netAmount: new Prisma.Decimal(saleAmount),
+              metadata: {
+                ...(typeof sale.walletTx.metadata === 'object' && sale.walletTx.metadata ? (sale.walletTx.metadata as object) : {}),
+                reconciledFeeDiff: diff,
+                reconciledAt: new Date().toISOString(),
+              },
+            },
+          });
+        }
+      }
+    }
+
+    if (totalAdjustment > 0) {
+      await db.walletBalance.update({
+        where: { userId },
+        data: {
+          balance: { increment: new Prisma.Decimal(totalAdjustment) },
+          version: { increment: 1 },
+          updatedAt: new Date(),
+        },
+      });
+
+      logger.info(`[WALLET_HISTORICAL_RECONCILIATION] Reconciled ₦${totalAdjustment} in historical DVA fee deductions for user ${userId}`);
+    }
+
+    return totalAdjustment;
   }
 
   /**

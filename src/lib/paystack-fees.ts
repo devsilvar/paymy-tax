@@ -52,11 +52,10 @@ const fees = () => config.paystack.fees;
 
 /**
  * Who absorbs the cost of a withdrawal.
- *  - 'merchant' (default): the fee comes out of what the SME asked for. They ask
- *    for ₦100,000, receive ₦99,900, and the platform balance drops by exactly
- *    ₦100,000 — which is what Paystack debits (net + fee(net)).
+ *  - 'merchant' (default): the fee is paid by the SME (additive: wallet debit = requested + fee,
+ *    and the full requested amount lands in the SME's bank account).
  *  - 'platform': the SME receives every naira they asked for and the platform
- *    eats the fee. Ledger debit = amount + fee.
+ *    eats the fee. Ledger debit = requested.
  */
 export function withdrawalFeeBearer(): WithdrawalFeeBearer {
   return fees().withdrawalFeeBearer === 'platform' ? 'platform' : 'merchant';
@@ -150,18 +149,26 @@ export const MIN_WITHDRAWAL_AMOUNT = 1000.00;
 export const WALLX_WITHDRAWAL_PCT = 1.0; // 1%
 export const WALLX_WITHDRAWAL_CAP = 300.00; // ₦300 cap
 
-export function wallxWithdrawalFee(amountNaira: number): number {
+export interface FeeConfigOptions {
+  pct?: number;
+  cap?: number;
+  minAmount?: number;
+}
+
+export function wallxWithdrawalFee(amountNaira: number, config?: FeeConfigOptions): number {
   const amount = Number(amountNaira);
   if (!Number.isFinite(amount) || amount <= 0) return 0;
-  return round2(Math.min((amount * WALLX_WITHDRAWAL_PCT) / 100, WALLX_WITHDRAWAL_CAP));
+  const pct = config?.pct !== undefined ? config.pct : WALLX_WITHDRAWAL_PCT;
+  const cap = config?.cap !== undefined ? config.cap : WALLX_WITHDRAWAL_CAP;
+  return round2(Math.min((amount * pct) / 100, cap));
 }
 
 /**
- * Prices a withdrawal with WallX 1% fee capped at ₦300.
+ * Prices a withdrawal with configurable WallX fee (default: 1% capped at ₦300).
  *
- * @throws when the requested amount is below the ₦1,000 floor.
+ * @throws when the requested amount is below the minimum withdrawal floor.
  */
-export function quoteWithdrawal(requestedNaira: number): WithdrawalQuote {
+export function quoteWithdrawal(requestedNaira: number, config?: FeeConfigOptions): WithdrawalQuote {
   const bearer = withdrawalFeeBearer();
   const requested = round2(Number(requestedNaira) || 0);
 
@@ -169,18 +176,19 @@ export function quoteWithdrawal(requestedNaira: number): WithdrawalQuote {
     return { requested: 0, amount: 0, fee: 0, netAmount: 0, paystackAmount: 0, bearer };
   }
 
-  if (requested < MIN_WITHDRAWAL_AMOUNT) {
+  const minFloor = config?.minAmount !== undefined ? config.minAmount : MIN_WITHDRAWAL_AMOUNT;
+  if (requested < minFloor) {
     throw new Error(
-      `Minimum withdrawal amount is ₦${MIN_WITHDRAWAL_AMOUNT.toLocaleString('en-NG', { minimumFractionDigits: 2 })}`
+      `Minimum withdrawal amount is ₦${minFloor.toLocaleString('en-NG', { minimumFractionDigits: 2 })}`
     );
   }
 
-  const fee = wallxWithdrawalFee(requested);
+  const fee = wallxWithdrawalFee(requested, config);
 
   if (bearer === 'platform') {
     return {
       requested,
-      amount: round2(requested + fee),
+      amount: requested,
       fee,
       netAmount: requested,
       paystackAmount: requested,
@@ -188,40 +196,51 @@ export function quoteWithdrawal(requestedNaira: number): WithdrawalQuote {
     };
   }
 
-  // Merchant bearer (default): fee is deducted from the requested amount
-  const net = round2(requested - fee);
-  return { requested, amount: requested, fee, netAmount: net, paystackAmount: net, bearer };
+  // Merchant bearer (additive): Sending Amount + WallX Fee = total debited from customer account.
+  // Net amount landing in customer's bank account = requested.
+  const totalDebit = round2(requested + fee);
+  return {
+    requested,
+    amount: totalDebit,
+    fee,
+    netAmount: requested,
+    paystackAmount: requested,
+    bearer,
+  };
 }
 
 /**
  * Human/machine-readable description of the schedule, safe to hand to the
  * frontend so the UI never hardcodes a naira figure.
  */
-export function feeSchedule() {
+export function feeSchedule(config?: FeeConfigOptions) {
   const f = fees();
+  const ratePct = config?.pct !== undefined ? config.pct : WALLX_WITHDRAWAL_PCT;
+  const cap = config?.cap !== undefined ? config.cap : WALLX_WITHDRAWAL_CAP;
+  const minAmount = config?.minAmount !== undefined ? config.minAmount : MIN_WITHDRAWAL_AMOUNT;
   return {
     currency: 'NGN',
-    minWithdrawal: MIN_WITHDRAWAL_AMOUNT,
+    minWithdrawal: minAmount,
     dvaInflow: {
       pct: f.dvaPct,
       cap: f.dvaCap,
-      borneBy: 'merchant' as const,
-      note:
-        'Paystack deducts this from each dedicated-virtual-account transfer before it settles. It is not added to what the sender pays.',
+      borneBy: 'platform' as const,
+      note: 'Platform absorbs Paystack DVA processing fees in full. Customer receives 100% credit.',
     },
     withdrawal: {
       bearer: withdrawalFeeBearer(),
-      ratePct: WALLX_WITHDRAWAL_PCT,
-      cap: WALLX_WITHDRAWAL_CAP,
-      minAmount: MIN_WITHDRAWAL_AMOUNT,
+      ratePct,
+      ratePercent: ratePct,
+      cap,
+      capAmount: cap,
+      minAmount,
       bands: [
         { upTo: f.transferLowMax, fee: f.transferLow },
         { upTo: f.transferMidMax, fee: f.transferMid },
         { upTo: null, fee: f.transferHigh },
       ],
       stampDuty: { amount: f.stampDuty, from: f.stampDutyFrom },
-      note:
-        'WallX charges 1% capped at ₦300.00 per withdrawal.',
+      note: `Withdrawal fee: ${ratePct}% capped at ₦${cap.toLocaleString('en-NG', { minimumFractionDigits: 2 })} per withdrawal.`,
     },
   };
 }

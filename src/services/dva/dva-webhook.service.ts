@@ -329,10 +329,11 @@ export async function processDVATransferWebhook(event: any) {
 
   const feeNaira =
     typeof data.fees === 'number' ? round2(data.fees / 100) : dvaProcessingFee(amount);
+  // Boss's rule: Platform absorbs Paystack's 1% DVA fee; customer receives 100% of deposit in full
   const netRetained =
     isSplitSettled && platformRetained
       ? toNumber(platformRetained)
-      : Math.max(0, amount - feeNaira);
+      : amount;
 
   // Self-healing path: sale was previously recorded but wallet crediting failed
   if (existingSale && !existingWalletTx) {
@@ -346,7 +347,7 @@ export async function processDVATransferWebhook(event: any) {
       userId: business.userId,
       businessId: business.id,
       amount,
-      fee: feeNaira,
+      fee: 0,
       netAmount: netRetained,
       reference,
       source: 'dva',
@@ -356,6 +357,7 @@ export async function processDVATransferWebhook(event: any) {
         channel: 'dva',
         paystackTransactionId: data.id,
         splitSettled: isSplitSettled,
+        paystackFeeNaira: feeNaira,
         healed: true,
       },
     });
@@ -427,7 +429,7 @@ export async function processDVATransferWebhook(event: any) {
             userId: business.userId,
             businessId: business.id,
             amount,
-            fee: feeNaira,
+            fee: 0,
             netAmount: netRetained,
             reference,
             source: 'dva',
@@ -437,6 +439,7 @@ export async function processDVATransferWebhook(event: any) {
               channel: 'dva',
               paystackTransactionId: data.id,
               splitSettled: isSplitSettled,
+              paystackFeeNaira: feeNaira,
             },
           },
           tx

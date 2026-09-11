@@ -15,5 +15,6 @@ export const adminApproveWithdrawal = settlementImpl.adminApproveWithdrawal;
 export const adminRejectWithdrawal = settlementImpl.adminRejectWithdrawal;
 export const adminRequeryWithdrawal = settlementImpl.adminRequeryWithdrawal;
 export const adminToggleAutoPayout = settlementImpl.adminToggleAutoPayout;
+export const adminManualSettleWithdrawal = settlementImpl.adminManualSettleWithdrawal;
 
 export * from './settlement/settlement.service';

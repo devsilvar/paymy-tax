@@ -7,6 +7,7 @@ import * as pinService from '@/services/pin.service';
 import { createReminderOnce } from '@/services/reminder.service';
 import { formatNaira } from '@/lib/format';
 import { quoteWithdrawal } from '@/lib/paystack-fees';
+import { PlatformConfigService } from '@/services/platform-config.service';
 import crypto from 'crypto';
 import {
   WithdrawBalanceInput,
@@ -64,10 +65,15 @@ export async function withdrawBalance(
   const dateStr = now.toISOString().slice(0, 10).replace(/-/g, '');
   const transferReference = `PO-${dateStr}-${crypto.randomBytes(5).toString('hex').toUpperCase()}`;
 
-  // 3b. Price the withdrawal against Paystack's published schedule BEFORE the ledger is touched
+  // 3b. Price the withdrawal against dynamic platform fee schedule BEFORE the ledger is touched
+  const feeConfig = await PlatformConfigService.getFeeConfig();
   let quote: ReturnType<typeof quoteWithdrawal>;
   try {
-    quote = quoteWithdrawal(params.amount);
+    quote = quoteWithdrawal(params.amount, {
+      pct: feeConfig.withdrawalFeePct,
+      cap: feeConfig.withdrawalFeeCap,
+      minAmount: feeConfig.minWithdrawalAmount,
+    });
   } catch (err) {
     throw new AppError(
       400,
@@ -217,7 +223,7 @@ export async function withdrawBalance(
       reminderType: 'payout_requested',
       scheduledDate: new Date(),
       message: `Withdrawal request of ${formatNaira(quote.netAmount)}${
-        quote.fee > 0 ? ` (after ${formatNaira(quote.fee)} fee)` : ''
+        quote.fee > 0 ? ` (fee ${formatNaira(quote.fee)}, total debited ${formatNaira(quote.amount)})` : ''
       } received (ref ${transferReference}). We'll notify you once it's reviewed — usually within 1–2 business hours.`,
       referenceType: 'settlement_payout',
       referenceId: payout.id,
@@ -244,7 +250,7 @@ export async function withdrawBalance(
         toNumber(payout.fee) > 0
           ? `Withdrawal request for ${formatNaira(toNumber(payout.netAmount))} submitted (fee ${formatNaira(
               toNumber(payout.fee)
-            )}). It will be processed once approved by an admin.`
+            )}, total debited ${formatNaira(toNumber(payout.amount))}). It will be processed once approved by an admin.`
           : 'Withdrawal request submitted. It will be processed once approved by an admin.',
     };
   }

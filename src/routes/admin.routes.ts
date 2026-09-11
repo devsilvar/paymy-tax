@@ -16,6 +16,14 @@ router.patch('/users/:id/email-verification', adminController.toggleEmailVerific
 router.get('/businesses', adminController.listBusinesses);
 router.get('/audit-logs', adminController.listAuditLogs);
 
+// Treasury P&L & forensic unit economics
+router.get('/treasury/analytics', adminController.getTreasuryAnalytics);
+router.get('/treasury/transactions/:id', adminController.getTreasuryTransactionDetail);
+
+// Global platform fee settings
+router.get('/settings/fees', adminController.getFeeConfig);
+router.patch('/settings/fees', adminController.updateFeeConfig);
+
 // Payout account change lock (admin-granted one-time permissions)
 router.post('/businesses/:businessId/payout-change-permit', adminController.grantPayoutChangePermission);
 router.delete('/businesses/:businessId/payout-change-permit', adminController.revokePayoutChangePermission);
@@ -28,6 +36,7 @@ router.get('/settlement/withdrawals', adminController.listWithdrawalRequests);
 router.post('/settlement/withdrawals/:id/approve', adminController.approveWithdrawalRequest);
 router.post('/settlement/withdrawals/:id/reject', adminController.rejectWithdrawalRequest);
 router.post('/settlement/withdrawals/:id/requery', adminController.requeryWithdrawalRequest);
+router.post('/settlement/withdrawals/:id/manual-settle', adminController.manualSettleWithdrawalRequest);
 
 // FIRS remittance tracking & reconciliation
 router.get('/remittances/summary', remittanceController.getSummary);

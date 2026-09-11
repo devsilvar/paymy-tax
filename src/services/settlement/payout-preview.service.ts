@@ -12,6 +12,7 @@ import {
   SETTLED_SALE_STATUSES,
 } from '@/shared/helpers';
 import { getPayoutLockStatus } from '@/lib/payout-lock';
+import { PlatformConfigService } from '@/services/platform-config.service';
 
 /**
  * Computes available withdrawal balance, tax due (display-only), and settlement details.
@@ -214,12 +215,11 @@ export async function getPayoutPreview(
   // 4. Tax due (display-only) and available balance.
   const taxReserve = Math.max(0, estimatedTaxLiability);
 
-  // Available balance: Platform-held DVA funds minus already taken Paystack DVA processing fees minus total withdrawals.
+  // Available balance: Platform-held DVA funds minus total withdrawals.
+  // The platform absorbs Paystack's 1% DVA processing fee, so customer available balance is 100% of their DVA deposits.
   const availableForWithdrawal = Math.max(
     0,
-    Math.round(
-      (platformHeldFunds - estimatedProcessingFees - totalWithdrawn) * 100
-    ) / 100
+    Math.round((platformHeldFunds - totalWithdrawn) * 100) / 100
   );
 
   const isPinLocked = Boolean(
@@ -227,6 +227,7 @@ export async function getPayoutPreview(
   );
 
   const payoutChangeLock = getPayoutLockStatus(business);
+  const feeConfig = await PlatformConfigService.getFeeConfig();
 
   return {
     businessId: business.id,
@@ -246,7 +247,11 @@ export async function getPayoutPreview(
     pooledCompletedWithdrawn: completedWithdrawn,
     estimatedProcessingFees,
     taxReserve,
-    fees: feeSchedule(),
+    fees: feeSchedule({
+      pct: feeConfig.withdrawalFeePct,
+      cap: feeConfig.withdrawalFeeCap,
+      minAmount: feeConfig.minWithdrawalAmount,
+    }),
     settlementAccount: {
       isConnected: Boolean(
         (business.settlementAccountNumber || business.user.settlementAccountNumber) &&

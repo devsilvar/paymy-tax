@@ -7,9 +7,13 @@ import {
   toggleStatusSchema,
   verifyEmailSchema,
   auditLogFilterSchema,
+  manualSettleWithdrawalSchema,
+  updateFeeConfigSchema,
+  treasuryAnalyticsFilterSchema,
 } from '@/validators/admin.validator';
 import * as adminService from '@/services/admin.service';
 import * as settlementService from '@/services/settlement.service';
+import { PlatformConfigService } from '@/services/platform-config.service';
 
 export const getDashboard = asyncHandler(
   async (_req: AuthenticatedRequest, res: Response) => {
@@ -213,6 +217,23 @@ export const requeryWithdrawalRequest = asyncHandler(
   }
 );
 
+export const manualSettleWithdrawalRequest = asyncHandler(
+  async (req: AuthenticatedRequest, res: Response) => {
+    const input = manualSettleWithdrawalSchema.parse(req.body);
+    const result = await settlementService.adminManualSettleWithdrawal(
+      req.user!.userId,
+      req.params.id,
+      input
+    );
+
+    res.status(200).json({
+      success: true,
+      data: result,
+      message: 'Withdrawal marked as settled via manual bank transfer.',
+    });
+  }
+);
+
 export const toggleBusinessAutoPayout = asyncHandler(
   async (req: AuthenticatedRequest, res: Response) => {
     const { businessId } = req.params;
@@ -241,3 +262,57 @@ export const toggleBusinessAutoPayout = asyncHandler(
     });
   }
 );
+
+export const getTreasuryAnalytics = asyncHandler(
+  async (req: AuthenticatedRequest, res: Response) => {
+    const filters = treasuryAnalyticsFilterSchema.parse(req.query);
+    const result = await adminService.getTreasuryAnalytics(filters);
+
+    res.status(200).json({
+      success: true,
+      data: result,
+    });
+  }
+);
+
+export const getTreasuryTransactionDetail = asyncHandler(
+  async (req: AuthenticatedRequest, res: Response) => {
+    const { id } = req.params;
+    const type = req.query.type as 'inflow' | 'outflow' | undefined;
+    const detail = await adminService.getTreasuryTransactionDetail(id, type);
+
+    res.status(200).json({
+      success: true,
+      data: detail,
+    });
+  }
+);
+
+export const getFeeConfig = asyncHandler(
+  async (_req: AuthenticatedRequest, res: Response) => {
+    const config = await PlatformConfigService.getFeeConfig();
+
+    res.status(200).json({
+      success: true,
+      data: config,
+    });
+  }
+);
+
+export const updateFeeConfig = asyncHandler(
+  async (req: AuthenticatedRequest, res: Response) => {
+    const params = updateFeeConfigSchema.parse(req.body);
+    const updated = await PlatformConfigService.updateFeeConfig(
+      params,
+      req.user!.userId,
+      { ip: req.ip, userAgent: req.headers['user-agent'] }
+    );
+
+    res.status(200).json({
+      success: true,
+      data: updated,
+      message: 'Global platform fee configuration updated successfully.',
+    });
+  }
+);
+

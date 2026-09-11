@@ -589,3 +589,178 @@ export async function adminToggleAutoPayout(
 
   return updated;
 }
+
+/**
+ * ADMIN: Settle a withdrawal manually (e.g. via direct corporate mobile banking transfer).
+ * This allows administrators to fulfill payouts when Paystack Transfers float is empty,
+ * recording the external bank session reference and permanently debiting the customer's wallet.
+ */
+export async function adminManualSettleWithdrawal(
+  adminUserId: string,
+  payoutId: string,
+  params: { sessionReference: string; notes?: string }
+) {
+  const payout = await prisma.settlementPayout.findUnique({
+    where: { id: payoutId },
+    include: {
+      business: {
+        include: {
+          user: {
+            select: { id: true, email: true },
+          },
+        },
+      },
+    },
+  });
+
+  if (!payout) {
+    throw new AppError(404, 'Withdrawal request not found', 'PAYOUT_NOT_FOUND');
+  }
+
+  const businessId = payout.businessId;
+  const userId = payout.business.userId;
+
+  // Allowed statuses:
+  // - 'pending': normal approval queue
+  // - 'processing': approval was attempted
+  // - 'failed': previous Paystack transfer failed (e.g. insufficient gateway balance)
+  if (!['pending', 'processing', 'failed'].includes(payout.status)) {
+    throw new AppError(
+      400,
+      `Cannot manually settle withdrawal with status '${payout.status}'. Only pending, processing, or failed requests can be settled.`,
+      'INVALID_PAYOUT_STATUS'
+    );
+  }
+
+  // Fenced transaction: PostgreSQL advisory lock + wallet settlement debit + payout record completion
+  const updated = await prisma.$transaction(async (tx) => {
+    // Fence 1: Advisory lock
+    const [{ locked }] = await tx.$queryRaw<Array<{ locked: boolean }>>`
+      SELECT pg_try_advisory_xact_lock(hashtextextended(${userId}::text, 0)) AS locked
+    `;
+    if (!locked) {
+      throw new AppError(
+        409,
+        'Another transaction for this account is in progress. Please wait a moment and try again.',
+        'WITHDRAWAL_IN_PROGRESS'
+      );
+    }
+
+    // Fence 2: If the payout had status 'failed', the locked funds were released back to available balance.
+    // We must verify that available balance is still sufficient to fulfill the debit.
+    if (payout.status === 'failed') {
+      const wallet = await tx.walletBalance.findUnique({ where: { userId } });
+      const currentAvailable = wallet ? toNumber(wallet.balance) - toNumber(wallet.lockedBalance) : 0;
+      const requiredDebit = toNumber(payout.amount);
+      if (currentAvailable < requiredDebit) {
+        throw new AppError(
+          400,
+          `User available balance (₦${currentAvailable.toLocaleString('en-NG', { minimumFractionDigits: 2 })}) is insufficient to fulfill this manual settlement (requires ₦${requiredDebit.toLocaleString('en-NG', { minimumFractionDigits: 2 })}).`,
+          'INSUFFICIENT_FUNDS'
+        );
+      }
+      // Re-reserve funds into lockedBalance so settlePayoutDebit decrements cleanly
+      await WalletService.reserveFunds(
+        {
+          userId,
+          amount: payout.amount,
+          fee: 0,
+          reference: payout.transferReference,
+          linkedPayoutId: payout.id,
+          description: `Manual settlement reservation for ${payout.business.businessName}`,
+        },
+        tx
+      );
+    }
+
+    // Update payout to completed
+    const updatedPayout = await tx.settlementPayout.update({
+      where: { id: payout.id },
+      data: {
+        status: 'completed',
+        completedAt: new Date(),
+        adminApprovedBy: adminUserId,
+        adminApprovedAt: new Date(),
+        paystackTransferCode: `MANUAL:${params.sessionReference.trim()}`,
+        failureReason: null,
+        narration: params.notes ? `${payout.narration ? payout.narration + ' | ' : ''}Manual Settle: ${params.notes.trim()}` : payout.narration,
+      },
+    });
+
+    // Execute wallet ledger debit
+    await WalletService.settlePayoutDebit(
+      {
+        userId,
+        businessId,
+        amount: toNumber(payout.amount),
+        fee: 0,
+        reference: payout.transferReference,
+        linkedPayoutId: payout.id,
+        description: `Manual bank transfer settlement (${params.sessionReference.trim()})`,
+        metadata: {
+          settlementMethod: 'manual_transfer',
+          sessionReference: params.sessionReference.trim(),
+          adminUserId,
+          notes: params.notes?.trim() || null,
+        },
+      },
+      tx
+    );
+
+    await logAudit(
+      {
+        userId: adminUserId,
+        businessId,
+        action: 'settlement.manual_settled',
+        resourceType: 'settlement_payout',
+        resourceId: payout.id,
+        newData: {
+          amount: toNumber(payout.amount),
+          fee: toNumber(payout.fee),
+          netAmount: toNumber(payout.netAmount),
+          sessionReference: params.sessionReference.trim(),
+          transferReference: payout.transferReference,
+          notes: params.notes?.trim() || null,
+        },
+      },
+      tx
+    );
+
+    return updatedPayout;
+  }, { maxWait: 10000, timeout: 20000 });
+
+  // Post-commit event emission
+  eventBus.emit('payout.completed', {
+    userId,
+    payoutId: payout.id,
+    amount: toNumber(payout.amount),
+    reference: payout.transferReference,
+  });
+
+  logger.info('Withdrawal settled manually by admin', {
+    payoutId: payout.id,
+    businessId,
+    amount: toNumber(payout.amount),
+    fee: toNumber(payout.fee),
+    netAmount: toNumber(payout.netAmount),
+    sessionReference: params.sessionReference.trim(),
+    reference: payout.transferReference,
+    adminUserId,
+  });
+
+  void createReminderOnce({
+    businessId,
+    reminderType: 'payout_approved',
+    scheduledDate: new Date(),
+    message: `Your withdrawal of ${formatNaira(toNumber(payout.netAmount))} has been settled via bank transfer (ref: ${params.sessionReference.trim()}).`,
+    referenceType: 'settlement_payout',
+    referenceId: payout.id,
+  }).catch((remErr) =>
+    logger.warn('Failed to create payout_approved reminder on manual settle', {
+      payoutId: payout.id,
+      err: remErr instanceof Error ? remErr.message : remErr,
+    })
+  );
+
+  return updated;
+}

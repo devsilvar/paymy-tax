@@ -697,3 +697,16 @@ model WalletTransaction {
   @@index([reference])
   @@map("wallet_transactions")
 }
+
+/// Global platform fee configuration managed by administrators
+model PlatformFeeConfig {
+  id                  String   @id @default("default")
+  withdrawalFeePct    Decimal  @default(1.00) @map("withdrawal_fee_pct") @db.Decimal(5, 2)
+  withdrawalFeeCap    Decimal  @default(300.00) @map("withdrawal_fee_cap") @db.Decimal(10, 2)
+  minWithdrawalAmount Decimal  @default(1000.00) @map("min_withdrawal_amount") @db.Decimal(10, 2)
+  updatedAt           DateTime @updatedAt @map("updated_at")
+  updatedBy           String?  @map("updated_by")
+
+  @@map("platform_fee_configs")
+}
+

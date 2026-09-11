@@ -41,6 +41,7 @@ export {
   adminRejectWithdrawal,
   adminRequeryWithdrawal,
   adminToggleAutoPayout,
+  adminManualSettleWithdrawal,
 } from './payout.service';
 
 export { getPayoutPreview } from './payout-preview.service';
