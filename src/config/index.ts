@@ -14,10 +14,6 @@ dotenv.config();
 
 /**
  * Validates that required environment variables are present.
- *
- * SUPABASE_* are NOT in the required set — the app uses Prisma + Postgres
- * for all DB access; Supabase is only needed if you opt into Supabase
- * Storage / Auth helpers (currently unused in this codebase).
  */
 function validateConfig() {
   const required = [
@@ -26,9 +22,9 @@ function validateConfig() {
     'JWT_REFRESH_SECRET',
   ];
 
-  // Mandate ENCRYPTION_KEY in production server runtimes (exempting test runner simulations)
+  // Mandate cryptographic keys in production server runtimes (exempting test runner simulations)
   if (process.env.NODE_ENV === 'production' && !process.env.JEST_WORKER_ID) {
-    required.push('ENCRYPTION_KEY');
+    required.push('ENCRYPTION_KEY', 'BLIND_INDEX_KEY');
   }
 
   const missing = required.filter((key) => !process.env[key]);
@@ -79,12 +75,6 @@ export const config = {
   // Database
   database: {
     url: process.env.DATABASE_URL!,
-  },
-
-  // Supabase (optional — only set if you use Supabase Storage / Auth helpers)
-  supabase: {
-    url: process.env.SUPABASE_URL || '',
-    serviceRoleKey: process.env.SUPABASE_SERVICE_ROLE_KEY || '',
   },
 
   // JWT
