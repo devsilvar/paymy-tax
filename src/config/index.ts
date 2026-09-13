@@ -47,10 +47,12 @@ validateConfig();
  * Parse PORT defensively. Render/Heroku inject PORT automatically; if a user
  * also adds it in the dashboard with a bad value (empty string, whitespace,
  * non-numeric), parseInt returns NaN and app.listen throws ERR_SOCKET_BAD_PORT.
- * Fall back to 10000 (Render's default) and log loudly so it's findable.
+/**
+ * Parse PORT defensively. Cloud platforms (Railway, Render, Fly) inject PORT automatically.
+ * Fall back to 3000 (standard Node/Express default) if none is provided.
  */
 const parsePort = (raw: string | undefined): number => {
-  const fallback = 10000;
+  const fallback = 3000;
   if (!raw || !raw.trim()) return fallback;
   const n = Number(raw.trim());
   if (!Number.isInteger(n) || n < 1 || n > 65535) {
