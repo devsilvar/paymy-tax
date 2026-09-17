@@ -100,24 +100,25 @@ export const errorHandler = (
     }
   } else if (err instanceof Prisma.PrismaClientKnownRequestError) {
     // Database errors from Prisma
-    statusCode = 400;
-
     switch (err.code) {
       case 'P2002':
+        statusCode = 409;
         errorCode = 'DUPLICATE_ENTRY';
         message = 'A record with this value already exists';
         details = { field: (err.meta?.target as string[])?.[0] };
         break;
       case 'P2025':
+        statusCode = 404;
         errorCode = 'NOT_FOUND';
         message = 'Record not found';
-        statusCode = 404;
         break;
       case 'P2003':
+        statusCode = 400;
         errorCode = 'FOREIGN_KEY_CONSTRAINT';
         message = 'Referenced record does not exist';
         break;
       default:
+        statusCode = 500;
         errorCode = 'DATABASE_ERROR';
         message = 'Database operation failed';
     }

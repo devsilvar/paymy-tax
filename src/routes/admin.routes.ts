@@ -24,6 +24,12 @@ router.get('/treasury/transactions/:id', adminController.getTreasuryTransactionD
 router.get('/settings/fees', adminController.getFeeConfig);
 router.patch('/settings/fees', adminController.updateFeeConfig);
 
+// Global dynamic AI provider settings
+router.get('/settings/ai', adminController.getAIConfig);
+router.put('/settings/ai', adminController.updateAIConfig);
+router.post('/settings/ai/test', adminController.testAIConfig);
+
+
 // Payout account change lock (admin-granted one-time permissions)
 router.post('/businesses/:businessId/payout-change-permit', adminController.grantPayoutChangePermission);
 router.delete('/businesses/:businessId/payout-change-permit', adminController.revokePayoutChangePermission);

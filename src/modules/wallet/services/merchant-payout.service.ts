@@ -188,7 +188,7 @@ export async function withdrawBalance(
     );
 
     return payoutRecord;
-  }, { maxWait: 10000, timeout: 20000 });
+  }, { maxWait: 20000, timeout: 60000 });
 
   // PATH A: Manual Admin Review (autoPayoutEnabled === false)
   if (!isAutoPayout) {

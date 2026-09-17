@@ -10,10 +10,13 @@ import {
   manualSettleWithdrawalSchema,
   updateFeeConfigSchema,
   treasuryAnalyticsFilterSchema,
+  updateAIConfigSchema,
+  testAIConfigSchema,
 } from '@/validators/admin.validator';
 import * as adminService from '@/services/admin.service';
 import * as settlementService from '@/services/settlement.service';
 import { PlatformConfigService } from '@/services/platform-config.service';
+import { AIConfigService } from '@/services/ai/ai-config.service';
 
 export const getDashboard = asyncHandler(
   async (_req: AuthenticatedRequest, res: Response) => {
@@ -315,4 +318,44 @@ export const updateFeeConfig = asyncHandler(
     });
   }
 );
+
+export const getAIConfig = asyncHandler(
+  async (_req: AuthenticatedRequest, res: Response) => {
+    const config = await AIConfigService.getAdminConfig();
+
+    res.status(200).json({
+      success: true,
+      data: config,
+    });
+  }
+);
+
+export const updateAIConfig = asyncHandler(
+  async (req: AuthenticatedRequest, res: Response) => {
+    const params = updateAIConfigSchema.parse(req.body);
+    const updated = await AIConfigService.updateConfig(params, req.user!.userId);
+
+    res.status(200).json({
+      success: true,
+      data: updated,
+      message: 'Global AI provider configuration updated successfully.',
+    });
+  }
+);
+
+export const testAIConfig = asyncHandler(
+  async (req: AuthenticatedRequest, res: Response) => {
+    const params = testAIConfigSchema.parse(req.body);
+    const result = await AIConfigService.testConnection(params);
+
+    res.status(200).json({
+      success: result.success,
+      data: result,
+      message: result.success
+        ? `Connection successful (${result.latencyMs}ms)`
+        : `Connection test failed: ${result.error}`,
+    });
+  }
+);
+
 

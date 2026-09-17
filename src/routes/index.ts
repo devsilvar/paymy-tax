@@ -29,6 +29,7 @@ import receiptRoutes from './receipt.routes';
 import ledgerRoutes from './ledger.routes';
 import settlementRoutes from './settlement.routes';
 import walletRoutes from './wallet.routes';
+import aiRoutes from './ai.routes';
 
 const router = Router();
 
@@ -58,6 +59,7 @@ v1.use('/businesses/:businessId/invoices', invoiceRoutes);
 v1.use('/businesses/:businessId/receipts', receiptRoutes);
 v1.use('/businesses/:businessId/ledger', ledgerRoutes);
 v1.use('/businesses/:businessId/search', searchRoutes);
+v1.use('/businesses/:businessId/ai', aiRoutes);
 v1.use('/banks', bankRoutes);
 v1.use('/transaction-classifications', transactionClassificationRoutes);
 v1.use('/wallet', walletRoutes);

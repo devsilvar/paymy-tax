@@ -186,9 +186,12 @@ export function quoteWithdrawal(requestedNaira: number, config?: FeeConfigOption
   const fee = wallxWithdrawalFee(requested, config);
 
   if (bearer === 'platform') {
+    // Platform mode: SME receives the full requested amount; platform absorbs the fee.
+    // Stored ledger debit = requested + fee.
+    const totalDebit = round2(requested + fee);
     return {
       requested,
-      amount: requested,
+      amount: totalDebit,
       fee,
       netAmount: requested,
       paystackAmount: requested,
@@ -196,15 +199,15 @@ export function quoteWithdrawal(requestedNaira: number, config?: FeeConfigOption
     };
   }
 
-  // Merchant bearer (additive): Sending Amount + WallX Fee = total debited from customer account.
-  // Net amount landing in customer's bank account = requested.
-  const totalDebit = round2(requested + fee);
+  // Merchant mode: The requested amount is the gross ledger debit.
+  // Fee is deducted from the payout, so net amount landing in customer's bank account = requested - fee.
+  const netAmount = round2(Math.max(0, requested - fee));
   return {
     requested,
-    amount: totalDebit,
+    amount: requested,
     fee,
-    netAmount: requested,
-    paystackAmount: requested,
+    netAmount,
+    paystackAmount: netAmount,
     bearer,
   };
 }

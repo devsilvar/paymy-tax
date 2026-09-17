@@ -4,7 +4,7 @@ import { AppError } from '@/middleware/errorHandler';
 import { logAudit } from '@/lib/audit';
 import { CreateSaleInput, UpdateSaleInput, SaleLineItemInput } from '@/validators/sales.validator';
 import { verifyBusinessOwnership } from '@/lib/ownership';
-import { assertMonthNotLocked, resolveTransactionDateForLockedMonth } from '@/shared/helpers';
+import { assertMonthNotLocked } from '@/shared/helpers';
 
 // ─── Helpers ────────────────────────────────────────────────
 
@@ -48,15 +48,7 @@ export async function createSale(
   const db = tx ?? prisma;
 
   await verifyBusinessOwnership(userId, businessId, db);
-  const dateRes = await resolveTransactionDateForLockedMonth(businessId, input.transactionDate, db);
-  if (dateRes.wasAdjusted) {
-    logger.warn('Sale transactionDate adjusted from locked/finalized month to current active month', {
-      businessId,
-      originalDate: dateRes.originalDate?.toISOString(),
-      effectiveDate: dateRes.effectiveDate.toISOString(),
-      reason: dateRes.reason,
-    });
-  }
+  await assertMonthNotLocked(businessId, input.transactionDate, db);
 
   const hasItems = input.items !== undefined && input.items.length > 0;
   const { total: computedTotal, lines } = hasItems
@@ -82,16 +74,9 @@ export async function createSale(
         referenceId: input.referenceId,
         description,
         customerName: input.customerName,
-        transactionDate: dateRes.effectiveDate,
+        transactionDate: input.transactionDate,
         metadata: {
           ...(input.metadata !== undefined && typeof input.metadata === 'object' ? input.metadata : {}),
-          ...(dateRes.wasAdjusted
-            ? {
-                dateAdjustedFromLockedMonth: true,
-                originalTransactionDate: dateRes.originalDate?.toISOString(),
-                adjustmentReason: dateRes.reason,
-              }
-            : {}),
         },
         needsVerification: input.needsVerification ?? false,
         createdBy: userId,
@@ -122,13 +107,7 @@ export async function createSale(
         newData: {
           amount: effectiveAmount,
           source: input.source,
-          transactionDate: dateRes.effectiveDate.toISOString(),
-          ...(dateRes.wasAdjusted
-            ? {
-                dateAdjustedFromLockedMonth: true,
-                originalTransactionDate: dateRes.originalDate?.toISOString(),
-              }
-            : {}),
+          transactionDate: input.transactionDate.toISOString(),
           ...(hasItems ? { itemCount: lines.length } : {}),
         },
       },

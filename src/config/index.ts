@@ -254,6 +254,14 @@ export const config = {
       process.env.BLIND_INDEX_KEY ||
       'dev-tax-wallx-blind-index-key-32b-secret!',
   },
+
+  // AI Assistant & Business Intelligence
+  ai: {
+    provider: (process.env.AI_PROVIDER || 'groq') as 'groq' | 'gemini',
+    groqApiKey: process.env.GROQ_API_KEY || '',
+    geminiApiKey: process.env.GEMINI_API_KEY || '',
+    model: process.env.AI_MODEL || 'qwen/qwen3.8-27b',
+  },
 } as const;
 
 export default config;

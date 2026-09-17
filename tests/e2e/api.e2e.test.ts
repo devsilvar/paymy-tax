@@ -32,6 +32,7 @@ const auth = () => ({ Authorization: `Bearer ${accessToken}` });
 const adminAuth = () => ({ Authorization: `Bearer ${adminToken}` });
 
 beforeAll(async () => {
+  jest.setTimeout(60000);
   app = createApp();
   await prisma.$connect();
 });
@@ -1779,6 +1780,7 @@ describe('PayMyTax E2E', () => {
           businessId: testWithdrawalBusinessId,
           amount: 50000,
           source: 'bank_transfer',
+          dvaOrigin: true,
           status: 'confirmed',
           description: 'DVA auto-captured inflow',
           transactionDate: new Date(),

@@ -709,3 +709,20 @@ model PlatformFeeConfig {
   @@map("platform_fee_configs")
 }
 
+/// Global dynamic AI provider configuration managed by administrators
+model AiProviderConfig {
+  id              String   @id @default("default")
+  provider        String   @default("groq") // groq, openai, xai, gemini, deepseek, openrouter, custom
+  name            String   @default("Groq Cloud")
+  baseUrl         String   @default("https://api.groq.com/openai/v1") @map("base_url")
+  apiKeyEncrypted String?  @map("api_key_encrypted")
+  model           String   @default("qwen/qwen3.8-27b")
+  temperature     Decimal  @default(0.30) @db.Decimal(3, 2)
+  maxTokens       Int      @default(1024) @map("max_tokens")
+  isActive        Boolean  @default(true) @map("is_active")
+  updatedAt       DateTime @updatedAt @map("updated_at")
+  updatedBy       String?  @map("updated_by")
+
+  @@map("ai_provider_configs")
+}
+

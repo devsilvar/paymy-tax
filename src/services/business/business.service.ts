@@ -199,11 +199,10 @@ export async function deleteBusiness(userId: string, businessId: string, tx?: Tx
 
   await logAudit({
     userId,
-    businessId,
     action: 'business.deleted',
     resourceType: 'business',
     resourceId: businessId,
-    oldData: { businessName: business.businessName },
+    oldData: { businessId, businessName: business.businessName },
   }, tx);
 
   // Invalidate ownership cache after deletion

@@ -40,6 +40,24 @@ export const treasuryAnalyticsFilterSchema = paginationSchema.extend({
   search: asStringOptional,
 });
 
+export const updateAIConfigSchema = z.object({
+  provider: z.string().trim().min(1, 'Provider identifier is required'),
+  name: z.string().trim().min(1, 'Provider display name is required'),
+  baseUrl: z.string().trim().url('A valid base URL is required'),
+  apiKey: z.string().trim().optional(),
+  model: z.string().trim().min(1, 'Model identifier is required'),
+  temperature: z.number().min(0).max(2).optional().default(0.3),
+  maxTokens: z.number().int().min(50).max(8192).optional().default(1024),
+  isActive: z.boolean().optional().default(true),
+});
+
+export const testAIConfigSchema = z.object({
+  provider: z.string().trim().optional(),
+  baseUrl: z.string().trim().url('A valid base URL is required'),
+  apiKey: z.string().trim().optional(),
+  model: z.string().trim().min(1, 'Model identifier is required'),
+});
+
 export type PaginationInput = z.infer<typeof paginationSchema>;
 export type UserSearchInput = z.infer<typeof userSearchSchema>;
 export type ToggleStatusInput = z.infer<typeof toggleStatusSchema>;
@@ -48,3 +66,5 @@ export type AuditLogFilterInput = z.infer<typeof auditLogFilterSchema>;
 export type ManualSettleWithdrawalInput = z.infer<typeof manualSettleWithdrawalSchema>;
 export type UpdateFeeConfigInput = z.infer<typeof updateFeeConfigSchema>;
 export type TreasuryAnalyticsFilterInput = z.infer<typeof treasuryAnalyticsFilterSchema>;
+export type UpdateAIConfigInput = z.infer<typeof updateAIConfigSchema>;
+export type TestAIConfigInput = z.infer<typeof testAIConfigSchema>;

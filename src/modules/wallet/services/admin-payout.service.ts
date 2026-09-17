@@ -173,7 +173,7 @@ export async function adminApproveWithdrawal(adminUserId: string, payoutId: stri
         'ALREADY_PROCESSED'
       );
     }
-  }, { maxWait: 10000, timeout: 20000 });
+  }, { maxWait: 20000, timeout: 60000 });
 
   // Network IO outside any transaction
   try {
