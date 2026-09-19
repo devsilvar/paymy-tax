@@ -28,6 +28,9 @@ router.post('/pin/setup', authenticate, pinController.setup);
 router.post('/pin/verify', authenticate, pinController.verify);
 router.put('/pin/change', authenticate, pinController.change);
 
+// ─── Non-Custodial Regulatory Terms (Authenticated) ─────────
+router.post('/accept-regulatory-terms', authenticate, authController.acceptRegulatoryTerms);
+
 // ─── Multi-Device Session Management (Authenticated) ───────
 router.get('/sessions', authenticate, sessionController.listSessions);
 router.delete('/sessions/:sessionId', authenticate, sessionController.revokeSession);

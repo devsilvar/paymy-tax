@@ -1868,11 +1868,10 @@ describe('PayMyTax E2E', () => {
       expect(res.status).toBe(200);
       expect(res.body.data.status).toBe('pending');
       expect(res.body.data).toHaveProperty('transferReference');
-      // Fee contract surfaced to the frontend: the ledger debit equals the
-      // request in merchant mode, and fee + net must reconcile to it exactly.
-      expect(res.body.data.amount).toBe(10000);
+      // Additive surcharge: wallet debit = requested + fee; bank gets requested
+      expect(res.body.data.netAmount).toBe(10000);
       expect(res.body.data.fee).toBeGreaterThan(0);
-      expect(res.body.data.netAmount + res.body.data.fee).toBeCloseTo(res.body.data.amount, 2);
+      expect(res.body.data.amount).toBe(res.body.data.netAmount + res.body.data.fee);
       expect(res.body.message).toContain('awaiting admin approval');
       testWithdrawalRequestId = res.body.data.id;
     });
@@ -1905,12 +1904,12 @@ describe('PayMyTax E2E', () => {
       expect(res.body.data.status).toBe('pending');
     });
 
-    it('NEW-7: Duplicate guard matches quote.amount in platform-bearer mode (requested + fee)', async () => {
+    it('NEW-7: Duplicate guard matches quote.amount in platform-bearer mode (requested, no surcharge)', async () => {
       const original = config.paystack.fees.withdrawalFeeBearer;
       (config.paystack.fees as { withdrawalFeeBearer: string }).withdrawalFeeBearer = 'platform';
       try {
-        // Platform mode: the SME receives the full amount and the fee rides ON
-        // TOP, so the stored ledger amount is 5000 + fee (₦10 low band) = 5010.
+        // Platform mode: platform absorbs the fee, so the stored ledger
+        // amount is just 5000 (no fee added on top).
         const first = await request(app)
           .post(`/api/v1/businesses/${testWithdrawalBusinessId}/settlement/withdraw`)
           .set(auth())
@@ -1919,11 +1918,10 @@ describe('PayMyTax E2E', () => {
         expect(first.status).toBe(200);
         expect(first.body.data.netAmount).toBe(5000);
         expect(first.body.data.fee).toBeGreaterThan(0);
-        expect(first.body.data.amount).toBeGreaterThan(5000); // requested + fee
+        expect(first.body.data.amount).toBe(5000); // platform absorbs fee — no surcharge
 
-        // Regression: the guard must match the STORED amount (5010), not the raw
-        // request (5000) — otherwise double-tap protection silently dies in
-        // platform mode, because the second 5000 request never equals 5010.
+        // Regression: the guard must match the STORED amount (5000), which in
+        // platform mode equals the raw request, so duplicate detection works.
         const second = await request(app)
           .post(`/api/v1/businesses/${testWithdrawalBusinessId}/settlement/withdraw`)
           .set(auth())

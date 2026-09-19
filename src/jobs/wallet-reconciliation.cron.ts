@@ -18,6 +18,8 @@ import logger from '../lib/logger';
 import { config } from '../config';
 import { toNumber } from '../shared/helpers/number';
 import { getPayoutPreview } from '../services/settlement/payout-preview.service';
+import { getPaymentProvider } from '../lib/payment';
+import { logAudit } from '../lib/audit';
 
 // Arbitrary 32-bit int. Registered in lock key directory:
 //   947362 — daily reminder sweep (reminders.cron.ts)
@@ -50,6 +52,13 @@ export interface WalletReconciliationResult {
   ledgerMismatchCount: number;
   oracleDriftCount: number;
   totalDriftNaira: number;
+  // Invariant 3: Gateway Solvency Oracle
+  totalLiabilitiesNaira: number;
+  gatewayBalanceNaira: number;
+  reserveRatio: number;
+  isSolvent: boolean;
+  solvencyDeficitNaira: number;
+  gatewayReachable: boolean;
 }
 
 export async function runWalletReconciliationSweep(opts?: {
@@ -70,7 +79,18 @@ export async function runWalletReconciliationSweep(opts?: {
         logger.warn('Wallet reconciliation sweep skipped — another worker holds the lock', {
           lockKey: LOCK_KEY,
         });
-        return { usersAudited: 0, ledgerMismatchCount: 0, oracleDriftCount: 0, totalDriftNaira: 0 };
+        return {
+          usersAudited: 0,
+          ledgerMismatchCount: 0,
+          oracleDriftCount: 0,
+          totalDriftNaira: 0,
+          totalLiabilitiesNaira: 0,
+          gatewayBalanceNaira: 0,
+          reserveRatio: 1.0,
+          isSolvent: true,
+          solvencyDeficitNaira: 0,
+          gatewayReachable: false,
+        };
       }
 
       return await executeReconciliation();
@@ -167,13 +187,89 @@ async function executeReconciliation(): Promise<WalletReconciliationResult> {
     }
   }
 
+  // ── Invariant 3: Real-Time 1:1 Gateway Liquid Reserve Solvency Oracle ──
+  let totalLiabilitiesNaira = 0;
+  let gatewayBalanceNaira = 0;
+  let reserveRatio = 1.0;
+  let isSolvent = true;
+  let solvencyDeficitNaira = 0;
+  let gatewayReachable = true;
+
+  try {
+    const obligationsResult = await prisma.walletBalance.aggregate({
+      _sum: {
+        balance: true,
+        lockedBalance: true,
+      },
+    });
+    totalLiabilitiesNaira =
+      toNumber(obligationsResult._sum.balance ?? 0) +
+      toNumber(obligationsResult._sum.lockedBalance ?? 0);
+
+    const provider = getPaymentProvider();
+    const balances = await provider.getBalance();
+    const ngnItem = balances.find((b) => b.currency === 'NGN');
+    gatewayBalanceNaira = ngnItem ? ngnItem.balanceNaira : 0;
+
+    if (totalLiabilitiesNaira > 0) {
+      reserveRatio = gatewayBalanceNaira / totalLiabilitiesNaira;
+      if (gatewayBalanceNaira < totalLiabilitiesNaira) {
+        isSolvent = false;
+        solvencyDeficitNaira = totalLiabilitiesNaira - gatewayBalanceNaira;
+
+        logger.error(
+          '[CUSTODY_SOLVENCY_DEFICIT] CRITICAL: Live gateway balance is insufficient to back merchant liabilities',
+          { totalLiabilitiesNaira, gatewayBalanceNaira, reserveRatio, solvencyDeficitNaira }
+        );
+
+        logAudit({
+          action: 'settlement.solvency_deficit_detected',
+          resourceType: 'PlatformSolvency',
+          resourceId: 'live_reserve',
+          newData: { totalLiabilitiesNaira, gatewayBalanceNaira, reserveRatio, solvencyDeficitNaira },
+        });
+      } else {
+        logger.info('[CUSTODY_SOLVENCY_CONFIRMED] Gateway reserve 1:1 backing verified', {
+          totalLiabilitiesNaira,
+          gatewayBalanceNaira,
+          reserveRatio: `${(reserveRatio * 100).toFixed(2)}%`,
+        });
+      }
+    }
+  } catch (err: any) {
+    gatewayReachable = false;
+    logger.error('[SOLVENCY_ORACLE_QUERY_FAILED] Failed to verify gateway liquid reserves', {
+      error: err.message,
+    });
+    // Do NOT set isSolvent=false on network errors — that would be a false alarm.
+    // The operator sees gatewayReachable=false in the result and the error log.
+  }
+
   logger.info('Wallet reconciliation sweep complete', {
     usersAudited,
     ledgerMismatchCount,
     oracleDriftCount,
     totalDriftNaira,
+    totalLiabilitiesNaira,
+    gatewayBalanceNaira,
+    reserveRatio,
+    isSolvent,
+    solvencyDeficitNaira,
+    gatewayReachable,
   });
 
-  return { usersAudited, ledgerMismatchCount, oracleDriftCount, totalDriftNaira };
+  return {
+    usersAudited,
+    ledgerMismatchCount,
+    oracleDriftCount,
+    totalDriftNaira,
+    totalLiabilitiesNaira,
+    gatewayBalanceNaira,
+    reserveRatio,
+    isSolvent,
+    solvencyDeficitNaira,
+    gatewayReachable,
+  };
 }
+
 

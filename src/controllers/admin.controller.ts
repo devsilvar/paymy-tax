@@ -9,6 +9,7 @@ import {
   auditLogFilterSchema,
   manualSettleWithdrawalSchema,
   updateFeeConfigSchema,
+  toggleAutoSweepSchema,
   treasuryAnalyticsFilterSchema,
   updateAIConfigSchema,
   testAIConfigSchema,
@@ -17,6 +18,7 @@ import * as adminService from '@/services/admin.service';
 import * as settlementService from '@/services/settlement.service';
 import { PlatformConfigService } from '@/services/platform-config.service';
 import { AIConfigService } from '@/services/ai/ai-config.service';
+import { runAutoSweep } from '@/jobs/wallet-auto-sweep.cron';
 
 export const getDashboard = asyncHandler(
   async (_req: AuthenticatedRequest, res: Response) => {
@@ -357,5 +359,35 @@ export const testAIConfig = asyncHandler(
     });
   }
 );
+
+export const toggleAutoSweep = asyncHandler(
+  async (req: AuthenticatedRequest, res: Response) => {
+    const { enabled } = toggleAutoSweepSchema.parse(req.body);
+    const updated = await PlatformConfigService.toggleAutoSweep(
+      enabled,
+      req.user!.userId,
+      { ip: req.ip, userAgent: req.headers['user-agent'] }
+    );
+
+    res.status(200).json({
+      success: true,
+      data: updated,
+      message: `Anti-deposit auto-sweep engine successfully ${enabled ? 'enabled' : 'disabled'}.`,
+    });
+  }
+);
+
+export const triggerAutoSweep = asyncHandler(
+  async (_req: AuthenticatedRequest, res: Response) => {
+    const summary = await runAutoSweep({ force: true });
+
+    res.status(200).json({
+      success: true,
+      data: summary,
+      message: `Auto-sweep completed: ${summary.sweepsCompleted} merchant wallet(s) swept (₦${summary.totalSweptNaira.toLocaleString()}).`,
+    });
+  }
+);
+
 
 

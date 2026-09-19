@@ -4,7 +4,7 @@ import {
   adminApproveWithdrawal,
   adminRejectWithdrawal,
 } from '@/modules/wallet/services/payout.service';
-import * as settlementService from '@/services/settlement.service';
+import * as settlementService from '@/services/settlement/payout-preview.service';
 import * as withdrawalActorModule from '@/shared/helpers/withdrawal-actor';
 import * as pinService from '@/services/pin.service';
 import * as paymentModule from '@/lib/payment';

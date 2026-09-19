@@ -20,6 +20,7 @@ import {
 import { WalletService } from '@/services/wallet.service';
 import { eventBus } from '@/core/events/event-bus';
 import { getPayoutPreview } from '@/services/settlement/payout-preview.service';
+import { isAmbiguousTransferError } from '@/lib/payment/errors';
 
 /**
  * Creates a withdrawal request (admin-approval workflow).
@@ -425,56 +426,121 @@ export async function withdrawBalance(
     };
   } catch (err) {
     try {
-      await prisma.settlementPayout.update({
-        where: { id: payout.id },
-        data: {
-          status: 'failed',
-          failureReason: err instanceof Error ? err.message : String(err),
-        },
-      });
+      if (isAmbiguousTransferError(err)) {
+        // ─── AMBIGUOUS: Paystack may have accepted the transfer ───
+        // DO NOT release locked funds — the reconciliation cron will verify
+        await prisma.settlementPayout.update({
+          where: { id: payout.id },
+          data: {
+            status: 'processing',
+            failureReason: `Gateway timeout / network error during auto-payout transfer. Awaiting automated reconciliation. Original error: ${err instanceof Error ? err.message : String(err)}`,
+            updatedAt: new Date(),
+          },
+        });
 
-      // Release locked funds back to available wallet balance on transfer failure
-      await WalletService.releaseLockedFunds({
-        userId,
-        amount: quote.amount,
-        fee: 0,
-      });
-
-      logAudit({
-        userId,
-        businessId,
-        action: 'settlement.auto_payout_failed',
-        resourceType: 'settlement_payout',
-        resourceId: payout.id,
-        newData: {
-          transferReference: payout.transferReference,
-          reason: err instanceof Error ? err.message : String(err),
-        },
-      });
-
-      void createReminderOnce({
-        businessId,
-        reminderType: 'payout_failed',
-        scheduledDate: new Date(),
-        message: `The transfer for your withdrawal of ${formatNaira(quote.amount)} could not be processed; the amount is back in your available balance. Support has been notified.`,
-        referenceType: 'settlement_payout',
-        referenceId: payout.id,
-      }).catch((remErr) =>
-        logger.warn('Failed to create payout_failed reminder on auto-payout error', {
+        logger.error('[PAYOUT_TRANSFER_AMBIGUOUS] Auto-payout transfer status uncertain — funds remain locked', {
           payoutId: payout.id,
-          err: remErr instanceof Error ? remErr.message : remErr,
-        })
-      );
+          businessId,
+          transferReference: payout.transferReference,
+          error: err instanceof Error ? err.message : String(err),
+        });
+
+        logAudit({
+          userId,
+          businessId,
+          action: 'settlement.auto_payout_transfer_ambiguous',
+          resourceType: 'settlement_payout',
+          resourceId: payout.id,
+          newData: {
+            transferReference: payout.transferReference,
+            reason: err instanceof Error ? err.message : String(err),
+          },
+        });
+
+        void createReminderOnce({
+          businessId,
+          reminderType: 'payout_failed',
+          scheduledDate: new Date(),
+          message: `Your withdrawal of ${formatNaira(quote.amount)} is being verified — the transfer was submitted but we're confirming the status with the bank. This usually resolves within 15 minutes. Your funds remain secure.`,
+          referenceType: 'settlement_payout',
+          referenceId: payout.id,
+        }).catch((remErr) =>
+          logger.warn('Failed to create ambiguous-transfer reminder for auto-payout', {
+            payoutId: payout.id,
+            err: remErr instanceof Error ? remErr.message : remErr,
+          })
+        );
+
+        throw new AppError(
+          504,
+          'Transfer was submitted to the payment gateway but response timed out. The payout is marked as processing and will be auto-reconciled within 15 minutes.',
+          'TRANSFER_AMBIGUOUS',
+          { payoutId: payout.id, transferReference: payout.transferReference },
+        );
+      } else {
+        // ─── DETERMINISTIC: Paystack definitively rejected the transfer ───
+        // Safe to release locked funds back to available wallet balance
+        await prisma.settlementPayout.update({
+          where: { id: payout.id },
+          data: {
+            status: 'failed',
+            failureReason: err instanceof Error ? err.message : String(err),
+          },
+        });
+
+        await WalletService.releaseLockedFunds({
+          userId,
+          amount: quote.amount,
+          fee: 0,
+        });
+
+        logAudit({
+          userId,
+          businessId,
+          action: 'settlement.auto_payout_failed',
+          resourceType: 'settlement_payout',
+          resourceId: payout.id,
+          newData: {
+            transferReference: payout.transferReference,
+            reason: err instanceof Error ? err.message : String(err),
+          },
+        });
+
+        void createReminderOnce({
+          businessId,
+          reminderType: 'payout_failed',
+          scheduledDate: new Date(),
+          message: `The transfer for your withdrawal of ${formatNaira(quote.amount)} could not be processed; the amount is back in your available balance. Support has been notified.`,
+          referenceType: 'settlement_payout',
+          referenceId: payout.id,
+        }).catch((remErr) =>
+          logger.warn('Failed to create payout_failed reminder on auto-payout error', {
+            payoutId: payout.id,
+            err: remErr instanceof Error ? remErr.message : remErr,
+          })
+        );
+
+        throw new AppError(
+          502,
+          `Transfer failed: ${err instanceof Error ? err.message : 'Gateway error'}. Your balance has been restored.`,
+          'TRANSFER_FAILED'
+        );
+      }
     } catch (markErr) {
-      logger.error('Failed to mark auto-payout failed after transfer error', {
+      // If markErr is our own AppError re-throw (TRANSFER_AMBIGUOUS or TRANSFER_FAILED), propagate it
+      if (markErr instanceof AppError && (markErr.code === 'TRANSFER_AMBIGUOUS' || markErr.code === 'TRANSFER_FAILED')) {
+        throw markErr;
+      }
+      logger.error('Failed to handle auto-payout error after transfer attempt', {
         payoutId: payout.id,
-        error: markErr instanceof Error ? markErr.message : String(markErr),
+        originalError: err instanceof Error ? err.message : String(err),
+        markError: markErr instanceof Error ? markErr.message : String(markErr),
       });
     }
 
     throw new AppError(
       502,
-      `Transfer failed: ${err instanceof Error ? err.message : 'Gateway error'}. Your balance has been restored.`,
+      `Transfer failed: ${err instanceof Error ? err.message : 'Gateway error'}. Please contact support.`,
       'TRANSFER_FAILED'
     );
   }

@@ -3,8 +3,9 @@ generator client {
 }
 
 datasource db {
-  provider = "postgresql"
-  url      = env("DATABASE_URL")
+  provider  = "postgresql"
+  url       = env("DATABASE_URL")
+  directUrl = env("DIRECT_URL")
 }
 
 /// User accounts - business owners and administrators
@@ -34,6 +35,10 @@ model User {
   pinLockedUntil      DateTime?  @map("pin_locked_until")
   pinAttemptsResetAt  DateTime?  @map("pin_attempts_reset_at")
   pinSetAt            DateTime?  @map("pin_set_at")
+
+  // Non-Custodial Regulatory Terms Acceptance (CBN Compliance Audit Trail)
+  regulatoryTermsAcceptedAt DateTime? @map("regulatory_terms_accepted_at")
+  regulatoryTermsVersion    String?   @map("regulatory_terms_version")
 
   // Central Commercial Settlement Bank (Outflow)
   settlementBankCode      String?   @map("settlement_bank_code")
@@ -703,6 +708,8 @@ model PlatformFeeConfig {
   withdrawalFeePct    Decimal  @default(1.00) @map("withdrawal_fee_pct") @db.Decimal(5, 2)
   withdrawalFeeCap    Decimal  @default(300.00) @map("withdrawal_fee_cap") @db.Decimal(10, 2)
   minWithdrawalAmount Decimal  @default(1000.00) @map("min_withdrawal_amount") @db.Decimal(10, 2)
+  autoSweepEnabled    Boolean  @default(true) @map("auto_sweep_enabled")
+  autoSweepThreshold  Decimal  @default(1000.00) @map("auto_sweep_threshold") @db.Decimal(10, 2)
   updatedAt           DateTime @updatedAt @map("updated_at")
   updatedBy           String?  @map("updated_by")
 

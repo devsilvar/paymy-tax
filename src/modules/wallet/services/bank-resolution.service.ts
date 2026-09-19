@@ -79,6 +79,9 @@ export async function connectSettlementBank(
   let subaccountCode: string;
   let splitAttached = false;
 
+  const dvaAccountNumber = business.virtualAccountNumber || business.user.virtualAccountNumber;
+  const customerCode = business.paystackCustomerCode || business.user.paystackCustomerCode;
+
   // 4. Update existing subaccount or create new one
   if (business.paystackSubaccountCode) {
     // Update in place to avoid orphaning the old subaccount
@@ -89,8 +92,19 @@ export async function connectSettlementBank(
     });
     subaccountCode = business.paystackSubaccountCode;
 
-    // Split already attached from previous setup
-    splitAttached = Boolean(business.virtualAccountNumber && business.paystackCustomerCode);
+    // Re-apply split to DVA (idempotent on Paystack's side)
+    if (dvaAccountNumber && customerCode) {
+      try {
+        await provider.splitDedicatedAccount(customerCode, subaccountCode);
+        splitAttached = true;
+      } catch (err) {
+        logger.error('Failed to re-attach split to DVA during subaccount update', {
+          businessId,
+          subaccountCode,
+          err: err instanceof Error ? err.message : err,
+        });
+      }
+    }
   } else {
     // First time — create new subaccount
     const result = await provider.createSubaccount({
@@ -102,12 +116,12 @@ export async function connectSettlementBank(
     subaccountCode = result.subaccountCode;
 
     // Attach split to existing DVA if active
-    if (business.virtualAccountNumber && business.paystackCustomerCode) {
+    if (dvaAccountNumber && customerCode) {
       try {
-        await provider.splitDedicatedAccount(business.paystackCustomerCode, subaccountCode);
+        await provider.splitDedicatedAccount(customerCode, subaccountCode);
         splitAttached = true;
       } catch (err) {
-        logger.warn('Could not attach split to existing DVA', {
+        logger.error('Failed to attach split to existing DVA during initial subaccount creation', {
           businessId,
           subaccountCode,
           err: err instanceof Error ? err.message : err,
@@ -125,6 +139,9 @@ export async function connectSettlementBank(
     settlementAccountName: accountName,
     platformCommissionPct: config.settlement.platformCommissionPct,
     settlementConnectedAt: new Date(),
+    autoSplitEnabled: splitAttached,
+    ...(customerCode && !business.paystackCustomerCode ? { paystackCustomerCode: customerCode } : {}),
+    ...(dvaAccountNumber && !business.virtualAccountNumber ? { virtualAccountNumber: dvaAccountNumber } : {}),
   };
 
   // Consume one-shot permission atomically (race-proof)

@@ -32,6 +32,12 @@ export const updateFeeConfigSchema = z.object({
   withdrawalFeePct: z.number().min(0, 'Fee percentage cannot be negative').max(10, 'Fee percentage cannot exceed 10%'),
   withdrawalFeeCap: z.number().min(0, 'Fee cap cannot be negative').max(100000, 'Fee cap cannot exceed ₦100,000'),
   minWithdrawalAmount: z.number().min(100, 'Minimum floor must be at least ₦100').max(1000000, 'Minimum floor cannot exceed ₦1,000,000'),
+  autoSweepEnabled: z.boolean().optional(),
+  autoSweepThreshold: z.number().min(100, 'Sweep threshold must be at least ₦100').max(10000000, 'Sweep threshold cannot exceed ₦10,000,000').optional(),
+});
+
+export const toggleAutoSweepSchema = z.object({
+  enabled: z.boolean(),
 });
 
 export const treasuryAnalyticsFilterSchema = paginationSchema.extend({
@@ -65,6 +71,7 @@ export type VerifyEmailInput = z.infer<typeof verifyEmailSchema>;
 export type AuditLogFilterInput = z.infer<typeof auditLogFilterSchema>;
 export type ManualSettleWithdrawalInput = z.infer<typeof manualSettleWithdrawalSchema>;
 export type UpdateFeeConfigInput = z.infer<typeof updateFeeConfigSchema>;
+export type ToggleAutoSweepInput = z.infer<typeof toggleAutoSweepSchema>;
 export type TreasuryAnalyticsFilterInput = z.infer<typeof treasuryAnalyticsFilterSchema>;
 export type UpdateAIConfigInput = z.infer<typeof updateAIConfigSchema>;
 export type TestAIConfigInput = z.infer<typeof testAIConfigSchema>;

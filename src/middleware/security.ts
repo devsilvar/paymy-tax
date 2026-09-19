@@ -99,12 +99,17 @@ export const globalRateLimiter = rateLimit({
 });
 
 /**
- * Strict rate limiter for auth endpoints
+ * Strict rate limiter for auth endpoints (login, register)
+ * - In production: 10 failed attempts per 15 minutes per IP
+ * - In test/dev: 5,000 attempts to allow test suite execution
+ * - skipSuccessfulRequests: true ensures legitimate users are never throttled
  */
 export const authRateLimiter = rateLimit({
-  windowMs: 15 * 60 * 1000, // 15 minutes
-  max: 5000, // 50 requests per window (increased for testing)
+  windowMs: config.rateLimit.authWindowMs,
+  max: config.rateLimit.authMaxRequests,
   skipSuccessfulRequests: true, // Don't count successful requests
+  standardHeaders: true, // Return rate limit info in `RateLimit-*` headers
+  legacyHeaders: false, // Disable `X-RateLimit-*` headers
   message: {
     error: {
       code: 'AUTH_RATE_LIMIT_EXCEEDED',

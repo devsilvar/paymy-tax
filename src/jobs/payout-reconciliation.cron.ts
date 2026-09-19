@@ -3,6 +3,7 @@ import prisma from '@/lib/prisma';
 import logger from '@/lib/logger';
 import { config } from '@/config';
 import { getPaymentProvider } from '@/lib/payment';
+import { AppError } from '@/middleware/errorHandler';
 import { WalletService } from '@/services/wallet.service';
 import { eventBus } from '@/core/events/event-bus';
 import { logAudit } from '@/lib/audit';
@@ -32,11 +33,13 @@ export interface PayoutReconciliationResult {
 export async function executePayoutReconciliationSweep(): Promise<PayoutReconciliationResult> {
   const tenMinutesAgo = new Date(Date.now() - 10 * 60 * 1000);
 
-  // Fetch payouts initiated >10 mins ago that have a Paystack transfer code and are still pending/processing
+  // Fetch payouts initiated >10 mins ago that have a transfer reference and are still pending/processing.
+  // Note: We query by transferReference (not paystackTransferCode) so that payouts where our
+  // initiateTransfer() call timed out before receiving a transfer_code are still swept.
   const stuckPayouts = await prisma.settlementPayout.findMany({
     where: {
       status: { in: ['processing', 'pending'] },
-      paystackTransferCode: { not: null },
+      transferReference: { not: null },
       initiatedAt: { lte: tenMinutesAgo },
     },
     include: {
@@ -201,12 +204,91 @@ export async function executePayoutReconciliationSweep(): Promise<PayoutReconcil
         });
       }
     } catch (payoutErr: any) {
-      // Isolate individual payout errors so one network issue does not fail the entire sweep
-      logger.error('Error reconciling individual payout transfer', {
-        payoutId: payout.id,
-        reference: payout.transferReference,
-        error: payoutErr.message,
-      });
+      // ─── Handle 404 NOT FOUND from Paystack (reference never reached their system) ───
+      const isNotFound =
+        payoutErr instanceof AppError &&
+        payoutErr.code === 'PAYSTACK_ERROR' &&
+        payoutErr.details?.httpStatus === 404;
+
+      if (isNotFound) {
+        const thirtyMinutesAgo = new Date(Date.now() - 30 * 60 * 1000);
+        const payoutInitiatedAt = payout.initiatedAt ? new Date(payout.initiatedAt) : null;
+
+        if (payoutInitiatedAt && payoutInitiatedAt <= thirtyMinutesAgo) {
+          // >30 min old and Paystack has no record → safe to declare failed
+          logger.warn('[RECONCILIATION] Transfer reference not found at Paystack after 30+ min — marking failed', {
+            payoutId: payout.id,
+            reference: payout.transferReference,
+            initiatedAt: payout.initiatedAt,
+          });
+
+          await prisma.settlementPayout.update({
+            where: { id: payout.id },
+            data: {
+              status: 'failed',
+              failureReason: 'Transfer reference not found at payment gateway after 30+ minutes. The transfer was never received by the bank.',
+            },
+          });
+
+          if (payout.business?.userId) {
+            await WalletService.releaseLockedFunds({
+              userId: payout.business.userId,
+              amount: payout.amount,
+              fee: 0,
+            });
+          }
+
+          logAudit({
+            businessId: payout.businessId,
+            action: 'settlement.payout_reconciled_not_found',
+            resourceType: 'settlement_payout',
+            resourceId: payout.id,
+            newData: {
+              status: 'failed',
+              transferReference: payout.transferReference,
+              reason: 'Transfer reference not found at Paystack after 30+ minutes',
+            },
+          });
+
+          try {
+            await createReminderOnce({
+              businessId: payout.businessId,
+              reminderType: 'payout_failed',
+              scheduledDate: new Date(),
+              message: `Your withdrawal of ${formatNaira(
+                toNumber(payout.amount)
+              )} (ref ${payout.transferReference}) could not be completed and funds have been released back to your available balance.`,
+              referenceType: 'settlement_payout',
+              referenceId: payout.id,
+            });
+          } catch (remErr: any) {
+            logger.warn('Failed to create payout_failed reminder during not-found reconciliation', {
+              payoutId: payout.id,
+              err: remErr instanceof Error ? remErr.message : remErr,
+            });
+          }
+
+          failedCount++;
+        } else {
+          // <30 min old — Paystack may still be propagating, leave in processing
+          pendingCount++;
+          logger.debug('[RECONCILIATION] Transfer reference not yet at Paystack — awaiting propagation', {
+            payoutId: payout.id,
+            reference: payout.transferReference,
+            initiatedAt: payout.initiatedAt,
+            ageMinutes: payoutInitiatedAt
+              ? Math.round((Date.now() - payoutInitiatedAt.getTime()) / 60_000)
+              : 'unknown',
+          });
+        }
+      } else {
+        // Isolate individual payout errors so one network issue does not fail the entire sweep
+        logger.error('Error reconciling individual payout transfer', {
+          payoutId: payout.id,
+          reference: payout.transferReference,
+          error: payoutErr.message,
+        });
+      }
     }
   }
 

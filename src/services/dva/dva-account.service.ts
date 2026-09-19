@@ -295,6 +295,7 @@ export async function setupVirtualAccount(
         virtualAccountBank: dva.bankName,
         dvaFailureReason: null,
         dvaFailedAt: null,
+        autoSplitEnabled: Boolean(business.paystackSubaccountCode),
       },
     });
 

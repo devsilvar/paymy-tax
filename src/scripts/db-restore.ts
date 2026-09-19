@@ -2,6 +2,7 @@ import 'dotenv/config';
 import { PrismaClient } from '@prisma/client';
 import * as fs from 'fs';
 import * as path from 'path';
+import * as crypto from 'crypto';
 import { WalletService } from '../services/wallet/wallet.service';
 
 const prisma = new PrismaClient();
@@ -23,6 +24,19 @@ async function runRestore() {
   const rawData = fs.readFileSync(targetFile, 'utf-8');
   const backup = JSON.parse(rawData);
   const data = backup.data;
+
+  // Verify SHA-256 checksum if present in backup metadata
+  if (backup.metadata?.checksum) {
+    const serializedData = JSON.stringify(data);
+    const computedChecksum = crypto.createHash('sha256').update(serializedData).digest('hex');
+    if (computedChecksum !== backup.metadata.checksum) {
+      console.error('❌ Checksum mismatch: Backup payload appears corrupted or tampered!');
+      console.error(`   Expected: ${backup.metadata.checksum}`);
+      console.error(`   Computed: ${computedChecksum}`);
+      process.exit(1);
+    }
+    console.log(`🔒 Checksum verified: ${computedChecksum.slice(0, 12)}...`);
+  }
 
   // Restore in dependency order using batch inserts with skipDuplicates
   if (data.users?.length) {
@@ -199,6 +213,28 @@ async function runRestore() {
       await prisma.walletTransaction.createMany({
         data: data.walletTransactions.slice(i, i + CHUNK),
         skipDuplicates: true,
+      });
+    }
+  }
+
+  if (data.platformFeeConfigs?.length) {
+    console.log(`⏳ Restoring ${data.platformFeeConfigs.length} platform fee configs...`);
+    for (const pfc of data.platformFeeConfigs) {
+      await prisma.platformFeeConfig.upsert({
+        where: { id: pfc.id },
+        create: pfc,
+        update: pfc,
+      });
+    }
+  }
+
+  if (data.aiProviderConfigs?.length) {
+    console.log(`⏳ Restoring ${data.aiProviderConfigs.length} AI provider configs...`);
+    for (const aipc of data.aiProviderConfigs) {
+      await prisma.aiProviderConfig.upsert({
+        where: { id: aipc.id },
+        create: aipc,
+        update: aipc,
       });
     }
   }

@@ -23,6 +23,7 @@
     "db:setup": "npm run prisma:generate && npm run prisma:migrate && npm run prisma:seed",
     "db:backup": "tsx src/scripts/db-backup.ts",
     "db:restore": "tsx src/scripts/db-restore.ts",
+    "db:dr-verify": "tsx src/scripts/db-verify-dr.ts",
     "test:setup": "tsx src/test-setup.ts",
     "test": "jest --config jest.config.ts",
     "test:unit": "jest --config jest.config.ts tests/unit",

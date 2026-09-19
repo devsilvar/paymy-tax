@@ -51,11 +51,12 @@ const round2 = (n: number): number => Math.round((n + Number.EPSILON) * 100) / 1
 const fees = () => config.paystack.fees;
 
 /**
- * Who absorbs the cost of a withdrawal.
- *  - 'merchant' (default): the fee is paid by the SME (additive: wallet debit = requested + fee,
- *    and the full requested amount lands in the SME's bank account).
- *  - 'platform': the SME receives every naira they asked for and the platform
- *    eats the fee. Ledger debit = requested.
+ * Who bears the WallX withdrawal fee.
+ *  - 'merchant' (default): the fee is an ADDITIVE surcharge paid by the SME.
+ *    Wallet debit = requested + fee. The full requested amount lands in the
+ *    SME's bank account. This is the production default.
+ *  - 'platform': the platform absorbs the fee entirely. Wallet debit = requested.
+ *    The SME receives their full requested amount and pays nothing extra.
  */
 export function withdrawalFeeBearer(): WithdrawalFeeBearer {
   return fees().withdrawalFeeBearer === 'platform' ? 'platform' : 'merchant';
@@ -125,7 +126,7 @@ export interface WithdrawalQuote {
   requested: number;
   /** Debited from the platform-held ledger balance. */
   amount: number;
-  /** Transfer fee + stamp duty Paystack will keep. */
+  /** WallX platform withdrawal fee (1% capped at ₦300). */
   fee: number;
   /** What actually lands in the SME's commercial bank account. */
   netAmount: number;
@@ -135,15 +136,14 @@ export interface WithdrawalQuote {
 }
 
 /**
- * Prices a withdrawal so the ledger and Paystack's balance never drift.
+ * Prices a withdrawal.
  *
- * Paystack debits `paystackAmount + fee(paystackAmount)` from the balance, so in
- * merchant mode we solve for the net amount whose fee-inclusive cost equals what
- * the SME asked for. The fee is banded, so one pass can land in a different band
- * — iterate until it settles (it converges in ≤3 steps because the fee only ever
- * takes four distinct values).
+ * In merchant mode (default), the fee is additive: the wallet is debited
+ * requested + fee, and Paystack receives the full requested amount for
+ * transfer to the SME's bank. In platform mode, the wallet is debited
+ * only the requested amount and the platform absorbs the fee cost.
  *
- * @throws when the requested amount is too small to cover the fee at all.
+ * @throws when the requested amount is below the minimum withdrawal floor.
  */
 export const MIN_WITHDRAWAL_AMOUNT = 1000.00;
 export const WALLX_WITHDRAWAL_PCT = 1.0; // 1%
@@ -186,12 +186,11 @@ export function quoteWithdrawal(requestedNaira: number, config?: FeeConfigOption
   const fee = wallxWithdrawalFee(requested, config);
 
   if (bearer === 'platform') {
-    // Platform mode: SME receives the full requested amount; platform absorbs the fee.
-    // Stored ledger debit = requested + fee.
-    const totalDebit = round2(requested + fee);
+    // Platform absorbs: SME is not charged any extra fee.
+    // Wallet debit = requested only. Bank gets the full requested amount.
     return {
       requested,
-      amount: totalDebit,
+      amount: requested,
       fee,
       netAmount: requested,
       paystackAmount: requested,
@@ -199,15 +198,84 @@ export function quoteWithdrawal(requestedNaira: number, config?: FeeConfigOption
     };
   }
 
-  // Merchant mode: The requested amount is the gross ledger debit.
-  // Fee is deducted from the payout, so net amount landing in customer's bank account = requested - fee.
-  const netAmount = round2(Math.max(0, requested - fee));
+  // Merchant mode (default, additive surcharge):
+  // Fee rides on top — wallet debit = requested + fee.
+  // The full requested amount lands in the SME's bank account.
+  const totalDebit = round2(requested + fee);
   return {
     requested,
-    amount: requested,
+    amount: totalDebit,
     fee,
-    netAmount,
-    paystackAmount: netAmount,
+    netAmount: requested,
+    paystackAmount: requested,
+    bearer,
+  };
+}
+
+/**
+ * Prices a wallet auto-sweep where the TOTAL wallet debit is capped at available balance.
+ * Solves for `requested` such that `requested + fee <= available`.
+ * Guarantees that sweeping will never trigger an overdraft or INSUFFICIENT_FUNDS error.
+ */
+export function quoteAutoSweep(
+  availableNaira: number,
+  config?: FeeConfigOptions
+): WithdrawalQuote {
+  const bearer = withdrawalFeeBearer();
+  const available = round2(Number(availableNaira) || 0);
+
+  if (available <= 0) {
+    return { requested: 0, amount: 0, fee: 0, netAmount: 0, paystackAmount: 0, bearer };
+  }
+
+  const minFloor = config?.minAmount !== undefined ? config.minAmount : MIN_WITHDRAWAL_AMOUNT;
+
+  if (bearer === 'platform') {
+    if (available < minFloor) {
+      throw new Error(
+        `Available balance ₦${available.toFixed(2)} is below minimum withdrawal ₦${minFloor.toFixed(2)}`
+      );
+    }
+    const fee = wallxWithdrawalFee(available, config);
+    return {
+      requested: available,
+      amount: available,
+      fee,
+      netAmount: available,
+      paystackAmount: available,
+      bearer,
+    };
+  }
+
+  // Merchant mode (additive surcharge): solve for requested such that requested + fee <= available
+  const pct = config?.pct !== undefined ? config.pct : WALLX_WITHDRAWAL_PCT;
+  const cap = config?.cap !== undefined ? config.cap : WALLX_WITHDRAWAL_CAP;
+
+  let requested = round2(available / (1 + pct / 100));
+  // If fee hits cap, solve using cap directly
+  if (round2((requested * pct) / 100) >= cap) {
+    requested = round2(available - cap);
+  }
+
+  let fee = wallxWithdrawalFee(requested, config);
+  while (round2(requested + fee) > available && requested > 0) {
+    requested = round2(requested - 0.01);
+    fee = wallxWithdrawalFee(requested, config);
+  }
+
+  if (requested < minFloor) {
+    throw new Error(
+      `Swept net amount ₦${requested.toFixed(2)} after fees is below minimum withdrawal ₦${minFloor.toFixed(2)}`
+    );
+  }
+
+  const totalDebit = round2(requested + fee);
+  return {
+    requested,
+    amount: totalDebit,
+    fee,
+    netAmount: requested,
+    paystackAmount: requested,
     bearer,
   };
 }

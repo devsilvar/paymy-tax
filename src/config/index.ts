@@ -145,9 +145,9 @@ export const config = {
       stampDuty: Number(process.env.PAYSTACK_STAMP_DUTY ?? 50),
       stampDutyFrom: Number(process.env.PAYSTACK_STAMP_DUTY_FROM ?? 10000),
 
-      // Who absorbs the withdrawal cost: 'merchant' deducts it from what the
-      // SME asked for; 'platform' pays it on top and the SME gets the full
-      // amount. Confirm with finance before flipping this.
+      // Who bears the WallX withdrawal fee: 'merchant' (default) adds the fee
+      // on top of the requested amount; 'platform' absorbs it entirely.
+      // Confirm with finance before flipping this.
       withdrawalFeeBearer: (process.env.WITHDRAWAL_FEE_BEARER === 'platform'
         ? 'platform'
         : 'merchant') as 'merchant' | 'platform',
@@ -221,6 +221,12 @@ export const config = {
   rateLimit: {
     windowMs: parseInt(process.env.RATE_LIMIT_WINDOW_MS || '900000', 10),
     maxRequests: parseInt(process.env.RATE_LIMIT_MAX_REQUESTS || '10000', 10),
+    authWindowMs: parseInt(process.env.RATE_LIMIT_AUTH_WINDOW_MS || '900000', 10), // 15 minutes default
+    authMaxRequests: parseInt(
+      process.env.RATE_LIMIT_AUTH_MAX_REQUESTS ||
+        (process.env.NODE_ENV === 'production' ? '10' : '5000'),
+      10
+    ),
   },
 
   // PIN Security
@@ -245,6 +251,17 @@ export const config = {
       process.env.NODE_ENV === 'production',
   },
 
+  // Auto-Sweep: Nightly automated balance clearing to merchant's verified bank
+  // Ensures WallX does not operate as an unlicensed deposit-taking institution.
+  // Disabled by default in test/dev; auto-enabled in production alongside cron.
+  autoSweep: {
+    enabled:
+      process.env.AUTO_SWEEP_ENABLED === 'true' ||
+      process.env.NODE_ENV === 'production',
+    thresholdNaira: Number(process.env.AUTO_SWEEP_THRESHOLD_NAIRA ?? 1000),
+    schedule: process.env.AUTO_SWEEP_SCHEDULE || '0 2 * * *', // 02:00 Africa/Lagos
+  },
+
   // Security & KYC Cryptography
   security: {
     encryptionKey:
@@ -261,6 +278,20 @@ export const config = {
     groqApiKey: process.env.GROQ_API_KEY || '',
     geminiApiKey: process.env.GEMINI_API_KEY || '',
     model: process.env.AI_MODEL || 'qwen/qwen3.8-27b',
+  },
+
+  // Regulatory & Non-Custodial Compliance Disclosures
+  // Compliant with CBN NPS Framework & FCCPC Consumer Protection Rules
+  regulatory: {
+    companyLegalName: 'WallX Technology Services Limited',
+    platformRole: 'Financial Technology Software Provider (Non-Bank)',
+    partnerPSP: 'Paystack Payments Limited',
+    partnerPSPLicense: 'CBN-Licensed Payment Solution Service Provider (PSSP)',
+    partnerBanks: 'Titan Trust Bank Limited, Wema Bank Plc',
+    governingLaw: 'Laws of the Federal Republic of Nigeria',
+    nonCustodialNotice:
+      'PayMyTax by WallX is a financial technology software platform, not a bank or deposit-taking institution. Dedicated Virtual Accounts, split settlement routing, and interbank transfers are powered exclusively by CBN-licensed financial institutions. Merchant funds are held in trust by partner commercial banks and are never co-mingled with WallX operating capital.',
+    termsVersion: '2026.1-cbn-noncustodial',
   },
 } as const;
 

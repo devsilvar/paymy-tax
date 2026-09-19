@@ -1,6 +1,10 @@
 import { Request, Response } from 'express';
 import { asyncHandler } from '@/middleware/errorHandler';
 import { AuthenticatedRequest } from '@/types';
+import { config } from '@/config';
+import prisma from '@/lib/prisma';
+import { logAudit } from '@/lib/audit';
+import { acceptRegulatoryTermsSchema } from '@/validators/regulatory.validator';
 import {
   registerSchema,
   loginSchema,
@@ -133,4 +137,43 @@ export const updateBvn = asyncHandler(async (req: AuthenticatedRequest, res: Res
 
   res.status(200).json(result);
 });
+
+export const acceptRegulatoryTerms = asyncHandler(
+  async (req: AuthenticatedRequest, res: Response) => {
+    const { version } = acceptRegulatoryTermsSchema.parse(req.body);
+    const userId = req.user!.userId;
+    const termsVersion = version || config.regulatory.termsVersion;
+
+    const updatedUser = await prisma.user.update({
+      where: { id: userId },
+      data: {
+        regulatoryTermsAcceptedAt: new Date(),
+        regulatoryTermsVersion: termsVersion,
+      },
+      select: {
+        id: true,
+        email: true,
+        regulatoryTermsAcceptedAt: true,
+        regulatoryTermsVersion: true,
+      },
+    });
+
+    logAudit({
+      userId,
+      action: 'auth.regulatory_terms_accepted',
+      resourceType: 'User',
+      resourceId: userId,
+      newData: { version: termsVersion, timestamp: updatedUser.regulatoryTermsAcceptedAt },
+      ipAddress: req.ip,
+      userAgent: req.headers['user-agent'] as string | undefined,
+    });
+
+    res.status(200).json({
+      success: true,
+      data: updatedUser,
+      message: 'Non-custodial regulatory terms acknowledgment recorded successfully.',
+    });
+  }
+);
+
 

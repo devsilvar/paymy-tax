@@ -159,6 +159,15 @@ export interface VerifyTransferResult {
   gatewayResponse?: string;
 }
 
+// ─── Gateway Balance / Solvency Oracle Types ────────────────
+
+/** Balance item returned by the payment gateway. Amounts are in major currency unit (Naira, not kobo). */
+export interface GatewayBalanceItem {
+  currency: string;
+  /** Available balance in major currency unit (e.g. Naira). Kobo→Naira conversion happens inside the provider. */
+  balanceNaira: number;
+}
+
 // ─── Provider Interface ─────────────────────────────────────
 
 export interface PaymentProvider {
@@ -189,4 +198,7 @@ export interface PaymentProvider {
   createTransferRecipient(params: CreateTransferRecipientParams): Promise<CreateTransferRecipientResult>;
   initiateTransfer(params: InitiateTransferParams): Promise<InitiateTransferResult>;
   verifyTransfer(reference: string): Promise<VerifyTransferResult>;
+  /** Query available gateway balance per currency. Used by the solvency oracle. */
+  getBalance(): Promise<GatewayBalanceItem[]>;
 }
+

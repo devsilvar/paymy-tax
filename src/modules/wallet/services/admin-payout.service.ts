@@ -9,6 +9,7 @@ import { toNumber } from '@/shared/helpers';
 import { WalletService } from '@/services/wallet.service';
 import { eventBus } from '@/core/events/event-bus';
 import { getPayoutPreview } from '@/services/settlement/payout-preview.service';
+import { isAmbiguousTransferError } from '@/lib/payment/errors';
 
 /**
  * ADMIN: List withdrawal requests (queue) — paginated, optional status filter.
@@ -288,52 +289,107 @@ export async function adminApproveWithdrawal(adminUserId: string, payoutId: stri
     return updated;
   } catch (err) {
     try {
-      await prisma.settlementPayout.update({
-        where: { id: payout.id },
-        data: {
-          status: 'failed',
-          failureReason: err instanceof Error ? err.message : String(err),
-        },
-      });
-
-      // Release locked funds back to available wallet balance on approval failure
-      if (payout.business?.userId) {
-        await WalletService.releaseLockedFunds({
-          userId: payout.business.userId,
-          amount: payout.amount,
-          fee: 0,
+      if (isAmbiguousTransferError(err)) {
+        // ─── AMBIGUOUS: Paystack may have accepted the transfer ───
+        // DO NOT release locked funds — the reconciliation cron will verify
+        await prisma.settlementPayout.update({
+          where: { id: payout.id },
+          data: {
+            status: 'processing',
+            failureReason: `Gateway timeout / network error during transfer initiation. Awaiting automated reconciliation. Original error: ${err instanceof Error ? err.message : String(err)}`,
+            updatedAt: new Date(),
+          },
         });
-      }
 
-      logAudit({
-        userId: adminUserId,
-        businessId,
-        action: 'settlement.payout_failed',
-        resourceType: 'settlement_payout',
-        resourceId: payout.id,
-        newData: {
-          transferReference: payout.transferReference,
-          reason: err instanceof Error ? err.message : String(err),
-        },
-      });
-
-      void createReminderOnce({
-        businessId,
-        reminderType: 'payout_failed',
-        scheduledDate: new Date(),
-        message: `The transfer for your withdrawal of ${formatNaira(toNumber(payout.amount))} could not be initiated; the amount is back in your available balance. Support has been notified.`,
-        referenceType: 'settlement_payout',
-        referenceId: payout.id,
-      }).catch((remErr) =>
-        logger.warn('Failed to create payout_failed reminder on approval error', {
+        logger.error('[PAYOUT_TRANSFER_AMBIGUOUS] Admin approval transfer status uncertain — funds remain locked', {
           payoutId: payout.id,
-          err: remErr instanceof Error ? remErr.message : remErr,
-        })
-      );
+          businessId,
+          transferReference: payout.transferReference,
+          error: err instanceof Error ? err.message : String(err),
+        });
+
+        logAudit({
+          userId: adminUserId,
+          businessId,
+          action: 'settlement.payout_transfer_ambiguous',
+          resourceType: 'settlement_payout',
+          resourceId: payout.id,
+          newData: {
+            transferReference: payout.transferReference,
+            reason: err instanceof Error ? err.message : String(err),
+          },
+        });
+
+        void createReminderOnce({
+          businessId,
+          reminderType: 'payout_failed',
+          scheduledDate: new Date(),
+          message: `Your withdrawal of ${formatNaira(toNumber(payout.amount))} is being verified — the transfer was submitted but we're confirming the status with the bank. This usually resolves within 15 minutes. Your funds remain secure.`,
+          referenceType: 'settlement_payout',
+          referenceId: payout.id,
+        }).catch((remErr) =>
+          logger.warn('Failed to create ambiguous-transfer reminder', {
+            payoutId: payout.id,
+            err: remErr instanceof Error ? remErr.message : remErr,
+          })
+        );
+
+        throw new AppError(
+          504,
+          'Transfer was submitted to the payment gateway but response timed out. The payout is marked as processing and will be auto-reconciled within 15 minutes.',
+          'TRANSFER_AMBIGUOUS',
+          { payoutId: payout.id, transferReference: payout.transferReference },
+        );
+      } else {
+        // ─── DETERMINISTIC: Paystack definitively rejected the transfer ───
+        // Safe to release locked funds back to available wallet balance
+        await prisma.settlementPayout.update({
+          where: { id: payout.id },
+          data: {
+            status: 'failed',
+            failureReason: err instanceof Error ? err.message : String(err),
+          },
+        });
+
+        if (payout.business?.userId) {
+          await WalletService.releaseLockedFunds({
+            userId: payout.business.userId,
+            amount: payout.amount,
+            fee: 0,
+          });
+        }
+
+        logAudit({
+          userId: adminUserId,
+          businessId,
+          action: 'settlement.payout_failed',
+          resourceType: 'settlement_payout',
+          resourceId: payout.id,
+          newData: {
+            transferReference: payout.transferReference,
+            reason: err instanceof Error ? err.message : String(err),
+          },
+        });
+
+        void createReminderOnce({
+          businessId,
+          reminderType: 'payout_failed',
+          scheduledDate: new Date(),
+          message: `The transfer for your withdrawal of ${formatNaira(toNumber(payout.amount))} could not be initiated; the amount is back in your available balance. Support has been notified.`,
+          referenceType: 'settlement_payout',
+          referenceId: payout.id,
+        }).catch((remErr) =>
+          logger.warn('Failed to create payout_failed reminder on approval error', {
+            payoutId: payout.id,
+            err: remErr instanceof Error ? remErr.message : remErr,
+          })
+        );
+      }
     } catch (markErr) {
-      logger.error('Failed to mark payout failed after approval transfer error', {
+      logger.error('Failed to handle payout error after approval transfer attempt', {
         payoutId: payout.id,
-        error: markErr instanceof Error ? markErr.message : String(markErr),
+        originalError: err instanceof Error ? err.message : String(err),
+        markError: markErr instanceof Error ? markErr.message : String(markErr),
       });
     }
     throw err;

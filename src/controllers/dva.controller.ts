@@ -1,6 +1,7 @@
 import { Response } from 'express';
 import { asyncHandler } from '@/middleware/errorHandler';
 import { AuthenticatedRequest } from '@/types';
+import { config } from '@/config';
 import * as dvaService from '@/services/dva.service';
 import * as settlementService from '@/services/settlement.service';
 import {
@@ -58,6 +59,9 @@ export const getVirtualAccount = asyncHandler(async (req: AuthenticatedRequest, 
   res.status(200).json({
     success: true,
     data: result,
+    meta: {
+      regulatory: config.regulatory,
+    },
   });
 });
 

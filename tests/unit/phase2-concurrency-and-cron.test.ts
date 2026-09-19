@@ -201,38 +201,23 @@ describe('Phase 2 Concurrency & Cron Unit Tests', () => {
       );
     });
 
-    test('auto-adjusts transactionDate to current month when month is locked', async () => {
+    test('rejects sale creation with PERIOD_LOCKED when month is locked', async () => {
       const lockedDate = new Date('2026-01-10T10:00:00Z');
       jest.spyOn(prisma.monthlyTaxReport, 'findUnique').mockResolvedValue({
         isLocked: true,
         isFinalized: true,
       } as any);
 
-      const before = new Date();
-      let capturedData: any;
-
-      jest.spyOn(prisma.salesTransaction, 'create').mockImplementation((args: any) => {
-        capturedData = args.data;
-        return Promise.resolve({
-          id: 'sale-adjusted-1',
-          ...args.data,
-        }) as any;
+      await expect(
+        createSale(mockUserId, mockBusinessId, {
+          amount: 8500,
+          source: 'manual',
+          transactionDate: lockedDate,
+        })
+      ).rejects.toMatchObject({
+        statusCode: 423,
+        code: 'PERIOD_LOCKED',
       });
-
-      await createSale(mockUserId, mockBusinessId, {
-        amount: 8500,
-        source: 'manual',
-        transactionDate: lockedDate,
-      });
-
-      const after = new Date();
-
-      expect(capturedData).toBeDefined();
-      expect(capturedData.transactionDate.getTime()).toBeGreaterThanOrEqual(before.getTime() - 100);
-      expect(capturedData.transactionDate.getTime()).toBeLessThanOrEqual(after.getTime() + 100);
-      expect(capturedData.metadata.dateAdjustedFromLockedMonth).toBe(true);
-      expect(capturedData.metadata.originalTransactionDate).toBe(lockedDate.toISOString());
-      expect(capturedData.metadata.adjustmentReason).toContain('locked tax period');
     });
   });
 });

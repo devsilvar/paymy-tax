@@ -23,6 +23,8 @@ router.get('/treasury/transactions/:id', adminController.getTreasuryTransactionD
 // Global platform fee settings
 router.get('/settings/fees', adminController.getFeeConfig);
 router.patch('/settings/fees', adminController.updateFeeConfig);
+router.post('/settings/auto-sweep/toggle', adminController.toggleAutoSweep);
+router.post('/settings/auto-sweep/trigger', adminController.triggerAutoSweep);
 
 // Global dynamic AI provider settings
 router.get('/settings/ai', adminController.getAIConfig);

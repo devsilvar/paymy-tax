@@ -1,5 +1,6 @@
 import { Response } from 'express';
 import { AuthenticatedRequest } from '@/types';
+import { config } from '@/config';
 import * as settlementService from '@/services/settlement.service';
 import {
   withdrawBalanceSchema,
@@ -14,7 +15,13 @@ export async function getPayoutPreview(req: AuthenticatedRequest, res: Response)
     req.user!.userId,
     req.params.businessId
   );
-  res.json({ success: true, data: result });
+  res.json({
+    success: true,
+    data: result,
+    meta: {
+      regulatory: config.regulatory,
+    },
+  });
 }
 
 export async function resolveAccount(req: AuthenticatedRequest, res: Response) {

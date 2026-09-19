@@ -129,35 +129,39 @@ describe('Total withdrawal cost', () => {
   });
 });
 
-describe('quoteWithdrawal — WallX 1% fee capped at ₦300 (merchant bears fee)', () => {
-  test('calculates 1% fee on ₦1,000 (min floor)', () => {
+describe('quoteWithdrawal — WallX 1% fee capped at ₦300 (merchant bears fee, additive)', () => {
+  test('₦1,000 floor: fee ₦10, wallet debits ₦1,010, bank gets ₦1,000', () => {
     const q = quoteWithdrawal(1000);
     expect(q.bearer).toBe('merchant');
-    expect(q.amount).toBe(1000);
     expect(q.fee).toBe(10);
-    expect(q.netAmount).toBe(990);
-    expect(q.paystackAmount).toBe(990);
+    expect(q.amount).toBe(1010);       // wallet debit = requested + fee
+    expect(q.netAmount).toBe(1000);    // bank receives full requested
+    expect(q.paystackAmount).toBe(1000);
   });
 
-  test('calculates 1% fee on ₦10,000', () => {
+  test('₦10,000: fee ₦100, wallet debits ₦10,100, bank gets ₦10,000', () => {
     const q = quoteWithdrawal(10000);
     expect(q.fee).toBe(100);
-    expect(q.netAmount).toBe(9900);
-    expect(q.amount).toBe(10000);
+    expect(q.amount).toBe(10100);
+    expect(q.netAmount).toBe(10000);
+    expect(q.paystackAmount).toBe(10000);
   });
 
   test('caps fee at ₦300 on amounts ₦30,000 and above', () => {
     const q30k = quoteWithdrawal(30000);
     expect(q30k.fee).toBe(300);
-    expect(q30k.netAmount).toBe(29700);
+    expect(q30k.amount).toBe(30300);
+    expect(q30k.netAmount).toBe(30000);
 
     const q50k = quoteWithdrawal(50000);
     expect(q50k.fee).toBe(300);
-    expect(q50k.netAmount).toBe(49700);
+    expect(q50k.amount).toBe(50300);
+    expect(q50k.netAmount).toBe(50000);
 
     const q100k = quoteWithdrawal(100000);
     expect(q100k.fee).toBe(300);
-    expect(q100k.netAmount).toBe(99700);
+    expect(q100k.amount).toBe(100300);
+    expect(q100k.netAmount).toBe(100000);
   });
 
   test('refuses amounts below the ₦1,000 floor', () => {
@@ -168,26 +172,28 @@ describe('quoteWithdrawal — WallX 1% fee capped at ₦300 (merchant bears fee)
   });
 });
 
-describe('quoteWithdrawal — platform bears the fee', () => {
+describe('quoteWithdrawal — platform absorbs the fee', () => {
   const original = config.paystack.fees.withdrawalFeeBearer;
 
   afterEach(() => {
     (config.paystack.fees as { withdrawalFeeBearer: string }).withdrawalFeeBearer = original;
   });
 
-  test('SME receives the full amount and the ledger absorbs the 1% capped fee', () => {
+  test('SME wallet debits only the requested amount; fee is tracked but not charged', () => {
     (config.paystack.fees as { withdrawalFeeBearer: string }).withdrawalFeeBearer = 'platform';
     expect(withdrawalFeeBearer()).toBe('platform');
 
     const q10k = quoteWithdrawal(10000);
     expect(q10k.netAmount).toBe(10000);
-    expect(q10k.fee).toBe(100);
-    expect(q10k.amount).toBe(10100);
+    expect(q10k.fee).toBe(100);        // still calculated for accounting
+    expect(q10k.amount).toBe(10000);    // wallet debit = requested only (no surcharge)
+    expect(q10k.paystackAmount).toBe(10000);
 
     const q100k = quoteWithdrawal(100000);
     expect(q100k.netAmount).toBe(100000);
-    expect(q100k.fee).toBe(300); // Capped at 300
-    expect(q100k.amount).toBe(100300);
+    expect(q100k.fee).toBe(300);        // capped, tracked
+    expect(q100k.amount).toBe(100000);  // wallet debit = requested only
+    expect(q100k.paystackAmount).toBe(100000);
   });
 });
 
@@ -196,7 +202,7 @@ describe('feeSchedule — what the API exposes to the client', () => {
     const s = feeSchedule();
     expect(s.currency).toBe('NGN');
     expect(s.minWithdrawal).toBe(1000);
-    expect(s.dvaInflow).toMatchObject({ pct: 1, cap: 300, borneBy: 'merchant' });
+    expect(s.dvaInflow).toMatchObject({ pct: 1, cap: 300, borneBy: 'platform' });
     expect(s.withdrawal.ratePct).toBe(1);
     expect(s.withdrawal.cap).toBe(300);
     expect(s.withdrawal.minAmount).toBe(1000);
