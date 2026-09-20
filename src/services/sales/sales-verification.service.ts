@@ -60,6 +60,10 @@ const LEGACY_CLASSIFICATION_ALIASES: Record<string, string> = {
   grant: 'Grant Received',
   capital: 'Capital Injection',
   capital_injection: 'Capital Injection',
+  credit_settlement: 'Credit / Debt Settlement',
+  debt_settlement: 'Credit / Debt Settlement',
+  credit_payment: 'Credit / Debt Settlement',
+  credit_debt_settlement: 'Credit / Debt Settlement',
   other: 'Other',
 };
 

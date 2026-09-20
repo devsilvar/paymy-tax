@@ -122,6 +122,7 @@ model Business {
   statements           TaxStatement[]
   settlementPayouts    SettlementPayout[]
   walletTransactions   WalletTransaction[]
+  credits              CustomerCredit[]
 
   @@index([userId])
   @@index([taxId])
@@ -176,6 +177,7 @@ model SalesTransaction {
   dvaOrigin           Boolean                    @default(false) @map("dva_origin")
   invoice             Invoice?
   walletTx            WalletTransaction?
+  creditPayment       CreditPayment?
   business            Business                   @relation(fields: [businessId], references: [id], onDelete: Cascade)
   classification      TransactionClassification? @relation(fields: [classificationId], references: [id], onDelete: SetNull)
   items               SaleLineItem[]
@@ -363,6 +365,7 @@ model Customer {
   updatedAt  DateTime  @updatedAt @map("updated_at")
   business   Business  @relation(fields: [businessId], references: [id], onDelete: Cascade)
   invoices   Invoice[]
+  credits    CustomerCredit[]
 
   @@index([businessId, name])
   @@index([businessId, isActive])
@@ -550,6 +553,74 @@ enum TaxTreatment {
   taxable
   non_taxable
   review_required
+}
+
+/// Credit status lifecycle: unpaid -> partially_paid / overdue -> paid | written_off
+enum CreditStatus {
+  unpaid
+  partially_paid
+  paid
+  written_off
+  overdue
+}
+
+/// Customer credits / trade debt (buy now, pay later)
+/// Revenue is recognized only when payments are recorded — NOT on credit issuance.
+/// This preserves FIRS cash-basis accounting: no SalesTransaction until actual payment.
+model CustomerCredit {
+  id                  String        @id @default(uuid())
+  businessId          String        @map("business_id")
+  customerId          String?       @map("customer_id")
+  customerName        String        @map("customer_name")
+  customerPhone       String?       @map("customer_phone")
+  customerEmail       String?       @map("customer_email")
+  description         String
+  totalAmount         Decimal       @db.Decimal(15, 2) @map("total_amount")
+  amountPaid          Decimal       @default(0) @db.Decimal(15, 2) @map("amount_paid")
+  balance             Decimal       @db.Decimal(15, 2)
+  issueDate           DateTime      @db.Date @map("issue_date")
+  dueDate             DateTime      @db.Date @map("due_date")
+  reminderDate        DateTime?     @db.Date @map("reminder_date")
+  lastReminderSentAt  DateTime?     @map("last_reminder_sent_at")
+  status              CreditStatus  @default(unpaid)
+  guarantorName       String?       @map("guarantor_name")
+  guarantorPhone      String?       @map("guarantor_phone")
+  notes               String?
+  createdBy           String?       @map("created_by")
+  createdAt           DateTime      @default(now()) @map("created_at")
+  updatedAt           DateTime      @updatedAt @map("updated_at")
+
+  business   Business        @relation(fields: [businessId], references: [id], onDelete: Cascade)
+  customer   Customer?       @relation(fields: [customerId], references: [id])
+  payments   CreditPayment[]
+
+  @@index([businessId, status])
+  @@index([businessId, dueDate])
+  @@index([dueDate, status])
+  @@index([reminderDate, status])
+  @@index([customerId])
+  @@map("customer_credits")
+}
+
+/// Individual payments against a customer credit / trade debt.
+/// Each payment creates a linked SalesTransaction (confirmed, taxable) for FIRS revenue recognition.
+model CreditPayment {
+  id            String      @id @default(uuid())
+  creditId      String      @map("credit_id")
+  amount        Decimal     @db.Decimal(15, 2)
+  paymentDate   DateTime    @db.Date @map("payment_date")
+  paymentType   SalesSource @map("payment_type")
+  isFullPayment Boolean     @default(false) @map("is_full_payment")
+  linkedSaleId  String?     @unique @map("linked_sale_id")
+  notes         String?
+  createdAt     DateTime    @default(now()) @map("created_at")
+
+  credit     CustomerCredit    @relation(fields: [creditId], references: [id], onDelete: Cascade)
+  linkedSale SalesTransaction? @relation(fields: [linkedSaleId], references: [id])
+
+  @@index([creditId])
+  @@index([paymentDate])
+  @@map("credit_payments")
 }
 
 /// Audit log of every inbound Paystack webhook. Rows are written BEFORE

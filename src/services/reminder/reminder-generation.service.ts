@@ -3,6 +3,7 @@ import logger from '@/lib/logger';
 import { logAudit } from '@/lib/audit';
 import { formatNaira, formatDateISO } from '@/lib/format';
 import { verifyBusinessOwnership } from '@/lib/ownership';
+import { sendEmail } from '@/lib/email';
 
 // ─── Reminder Types ─────────────────────────────────────────
 //
@@ -33,9 +34,10 @@ export type ReminderType =
   | 'payout_approved'
   | 'payout_rejected'
   | 'payout_completed'
-  | 'payout_failed';
+  | 'payout_failed'
+  | 'credit_overdue';
 
-export type ReminderReferenceType = 'invoice' | 'payment' | 'sales_transaction' | 'business' | 'settlement_payout';
+export type ReminderReferenceType = 'invoice' | 'payment' | 'sales_transaction' | 'business' | 'settlement_payout' | 'customer_credit';
 
 export const REPORT_REMINDER_MESSAGES: Record<
   'tax_deadline' | 'unfiled_tax' | 'unfinalized_report' | 'unpaid_tax',
@@ -491,3 +493,122 @@ export async function sweepOverdueInvoicesForBusiness(
 
   return { remindersCreated, statusFlipped };
 }
+
+export interface CreditSweepResult {
+  remindersCreated: number;
+  statusFlipped: number;
+  emailsSent: number;
+}
+
+/**
+ * Sweeps all active credits to detect overdue debt and trigger due-date reminders.
+ * Scoped optionally by businessId (e.g. for testing / targeted sweep).
+ */
+export async function sweepCreditReminders(
+  businessId?: string
+): Promise<CreditSweepResult> {
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+
+  const credits = await prisma.customerCredit.findMany({
+    where: {
+      ...(businessId ? { businessId } : {}),
+      status: { in: ['unpaid', 'partially_paid', 'overdue'] },
+      OR: [
+        { dueDate: { lte: today } },
+        { reminderDate: { lte: today } },
+      ],
+    },
+    select: {
+      id: true,
+      businessId: true,
+      customerName: true,
+      customerEmail: true,
+      customerPhone: true,
+      totalAmount: true,
+      balance: true,
+      dueDate: true,
+      reminderDate: true,
+      status: true,
+      lastReminderSentAt: true,
+      business: {
+        select: {
+          businessName: true,
+          virtualAccountNumber: true,
+          virtualAccountBank: true,
+        },
+      },
+    },
+  });
+
+  let remindersCreated = 0;
+  let statusFlipped = 0;
+  let emailsSent = 0;
+
+  for (const credit of credits) {
+    try {
+      // 1. Flip to overdue if past due date and not already marked overdue
+      if (credit.dueDate < today && credit.status !== 'overdue') {
+        const updateRes = await prisma.customerCredit.updateMany({
+          where: { id: credit.id, status: { in: ['unpaid', 'partially_paid'] } },
+          data: { status: 'overdue' },
+        });
+        if (updateRes.count > 0) statusFlipped++;
+      }
+
+      // 2. Create in-app reminder (idempotent via createReminderOnce)
+      const reminderRes = await createReminderOnce({
+        businessId: credit.businessId,
+        reminderType: 'credit_overdue',
+        scheduledDate: today,
+        message: `${credit.customerName} owes ${formatNaira(Number(credit.balance))} (due ${formatDateISO(credit.dueDate)}).`,
+        referenceType: 'customer_credit',
+        referenceId: credit.id,
+      });
+      if (reminderRes.created) remindersCreated++;
+
+      // 3. Email debtor with 24h cooldown
+      const cutoff = new Date(Date.now() - 24 * 60 * 60 * 1000);
+      const shouldEmail =
+        credit.customerEmail &&
+        (!credit.lastReminderSentAt || credit.lastReminderSentAt < cutoff);
+
+      if (shouldEmail) {
+        const bankDetails = credit.business.virtualAccountNumber
+          ? `<p>You can settle this balance by bank transfer to:<br/><strong>Bank:</strong> ${credit.business.virtualAccountBank || 'Bank'}<br/><strong>Account Number:</strong> ${credit.business.virtualAccountNumber}</p>`
+          : '';
+
+        await sendEmail({
+          to: credit.customerEmail!,
+          subject: `Payment Reminder: ${formatNaira(Number(credit.balance))} due — ${credit.business.businessName}`,
+          html: `
+            <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px; border: 1px solid #e2e8f0; border-radius: 8px;">
+              <h2 style="color: #0f172a;">Payment Reminder</h2>
+              <p>Dear ${credit.customerName},</p>
+              <p>This is a reminder from <strong>${credit.business.businessName}</strong> regarding an outstanding balance of <strong>${formatNaira(Number(credit.balance))}</strong>, due on <strong>${formatDateISO(credit.dueDate)}</strong>.</p>
+              ${bankDetails}
+              <p>If you have already made this payment, please disregard this notice.</p>
+              <hr style="border: none; border-top: 1px solid #e2e8f0; margin: 20px 0;" />
+              <p style="font-size: 12px; color: #64748b;">Powered by PayMyTax</p>
+            </div>
+          `,
+        });
+
+        await prisma.customerCredit.update({
+          where: { id: credit.id },
+          data: { lastReminderSentAt: new Date() },
+        });
+        emailsSent++;
+      }
+    } catch (err) {
+      logger.warn('Credit reminder sweep: credit failed', {
+        creditId: credit.id,
+        businessId: credit.businessId,
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
+  }
+
+  return { remindersCreated, statusFlipped, emailsSent };
+}
+

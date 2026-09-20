@@ -276,6 +276,147 @@ async function main() {
   console.log('✅ Created tax report for March 2026\n');
 
   // =================================
+  // 6. CREATE SAMPLE CUSTOMER CREDITS / DEBTORS
+  // =================================
+  console.log('📖 Creating sample customer credits (Debtors Book)...');
+
+  const now = new Date();
+  const pastDueDate = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
+  const dueSoonDate = new Date(now.getTime() + 3 * 24 * 60 * 60 * 1000);
+  const dueLaterDate = new Date(now.getTime() + 10 * 24 * 60 * 60 * 1000);
+  const issuedDate = new Date(now.getTime() - 14 * 24 * 60 * 60 * 1000);
+
+  // Check if credits already exist to avoid duplicate seeding
+  const existingCredits = await prisma.customerCredit.count({ where: { businessId: business1.id } });
+  if (existingCredits === 0) {
+    // 1. Overdue debtor
+    await prisma.customerCredit.create({
+      data: {
+        businessId: business1.id,
+        customerName: 'Chukwudi Electronics Ltd',
+        customerPhone: '08031234567',
+        customerEmail: 'chukwudi@example.com',
+        description: 'Supply of 50 cartons of power inverters on credit',
+        totalAmount: 210000,
+        amountPaid: 0,
+        balance: 210000,
+        issueDate: issuedDate,
+        dueDate: pastDueDate,
+        status: 'overdue',
+        guarantorName: 'Chief Emeka Okonkwo',
+        guarantorPhone: '08099887766',
+        notes: 'Customer promised payment upon selling goods at Alaba market.',
+        createdBy: testUser1.id,
+      },
+    });
+
+    // 2. Partially paid debtor
+    const partialCredit = await prisma.customerCredit.create({
+      data: {
+        businessId: business1.id,
+        customerName: 'Mama Nkechi Provisions Store',
+        customerPhone: '08023456789',
+        description: 'Wholesale grains & vegetable oil delivery',
+        totalAmount: 85000,
+        amountPaid: 35000,
+        balance: 50000,
+        issueDate: issuedDate,
+        dueDate: dueSoonDate,
+        status: 'partially_paid',
+        notes: 'Partially settled ₦35,000 via cash on delivery; remaining ₦50,000 due this week.',
+        createdBy: testUser1.id,
+      },
+    });
+
+    // Create linked sale transaction for the partial payment (FIRS compliance: sales recognized on payment)
+    const partialSale = await prisma.salesTransaction.create({
+      data: {
+        businessId: business1.id,
+        amount: 35000,
+        source: 'cash',
+        status: 'confirmed',
+        description: 'Credit payment from Mama Nkechi Provisions Store (balance ₦50,000 remaining)',
+        transactionDate: issuedDate,
+        createdBy: testUser1.id,
+      },
+    });
+
+    await prisma.creditPayment.create({
+      data: {
+        creditId: partialCredit.id,
+        amount: 35000,
+        paymentDate: issuedDate,
+        paymentType: 'cash',
+        isFullPayment: false,
+        linkedSaleId: partialSale.id,
+        notes: 'Initial cash deposit upon delivery',
+      },
+    });
+
+    // 3. Unpaid debtor (due in 10 days)
+    await prisma.customerCredit.create({
+      data: {
+        businessId: business1.id,
+        customerName: 'Alhaji Musa Garba & Sons',
+        customerPhone: '08145678901',
+        description: 'Supply of 20 bags of fertilizer and farm tools',
+        totalAmount: 120000,
+        amountPaid: 0,
+        balance: 120000,
+        issueDate: issuedDate,
+        dueDate: dueLaterDate,
+        status: 'unpaid',
+        notes: 'Payment scheduled for harvest sales next week.',
+        createdBy: testUser1.id,
+      },
+    });
+
+    // 4. Fully settled debtor
+    const paidCredit = await prisma.customerCredit.create({
+      data: {
+        businessId: business1.id,
+        customerName: 'Folake Balogun Fashion House',
+        customerPhone: '08055667788',
+        description: 'Bulk textile material supply',
+        totalAmount: 45000,
+        amountPaid: 45000,
+        balance: 0,
+        issueDate: issuedDate,
+        dueDate: now,
+        status: 'paid',
+        notes: 'Paid in full via bank transfer.',
+        createdBy: testUser1.id,
+      },
+    });
+
+    const fullSale = await prisma.salesTransaction.create({
+      data: {
+        businessId: business1.id,
+        amount: 45000,
+        source: 'bank_transfer',
+        status: 'confirmed',
+        description: 'Full credit settlement from Folake Balogun Fashion House',
+        transactionDate: now,
+        createdBy: testUser1.id,
+      },
+    });
+
+    await prisma.creditPayment.create({
+      data: {
+        creditId: paidCredit.id,
+        amount: 45000,
+        paymentDate: now,
+        paymentType: 'bank_transfer',
+        isFullPayment: true,
+        linkedSaleId: fullSale.id,
+        notes: 'Full payment received via bank transfer',
+      },
+    });
+
+    console.log('✅ Created 4 sample customer credits & settlement sales\n');
+  }
+
+  // =================================
   // SUMMARY
   // =================================
   console.log('=================================');
@@ -287,6 +428,7 @@ async function main() {
   console.log(`Sales Transactions: ${salesData.length}`);
   console.log(`Expenses: ${expensesData.length}`);
   console.log(`Tax Reports: 1`);
+  console.log(`Customer Credits: 4`);
   console.log('\n🔐 Test Login Credentials:');
   console.log('Admin: admin@paymytax.com / Admin@123456');
   console.log('User:  john@example.com / Password123!');

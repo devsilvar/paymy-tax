@@ -30,6 +30,7 @@ import config from '@/config';
 import {
   generateRemindersForAllBusinesses,
   sweepOverdueInvoicesForBusiness,
+  sweepCreditReminders,
 } from '@/services/reminder.service';
 
 // Arbitrary 32-bit int. Document new lock keys here so they don't collide.
@@ -90,6 +91,7 @@ async function executeReminderSweep(): Promise<void> {
   try {
     const tax = await generateRemindersForAllBusinesses();
     const invoice = await sweepOverdueInvoicesForBusiness();
+    const credit = await sweepCreditReminders();
 
     logger.info('Reminder cron sweep: done', {
       businessesProcessed: tax.processed,
@@ -97,6 +99,9 @@ async function executeReminderSweep(): Promise<void> {
       deadlinesCreated: tax.deadlinesCreated,
       invoiceRemindersCreated: invoice.remindersCreated,
       invoicesFlippedToOverdue: invoice.statusFlipped,
+      creditRemindersCreated: credit.remindersCreated,
+      creditStatusFlipped: credit.statusFlipped,
+      creditEmailsSent: credit.emailsSent,
     });
   } catch (err) {
     logger.error('Reminder cron sweep: failed', {

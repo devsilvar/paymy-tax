@@ -71,6 +71,15 @@ export const DEFAULT_CLASSIFICATIONS = [
     description: 'Money returned from a previous payment',
   },
   
+  {
+    name: 'Credit / Debt Settlement',
+    category: TransactionCategory.revenue,
+    taxTreatment: TaxTreatment.taxable,
+    isRevenue: true,
+    isActive: true,
+    description: 'Settlement or partial payment of customer credit / trade debt',
+  },
+  
   // Other
   {
     name: 'Other',
@@ -85,14 +94,13 @@ export const DEFAULT_CLASSIFICATIONS = [
 export async function seedTransactionClassifications() {
   console.log('🌱 Seeding transaction classifications...');
   
-  // Delete old classifications first
-  await prisma.transactionClassification.deleteMany();
-  
   for (const classification of DEFAULT_CLASSIFICATIONS) {
-    await prisma.transactionClassification.create({
-      data: classification,
+    await prisma.transactionClassification.upsert({
+      where: { name: classification.name },
+      update: classification,
+      create: classification,
     });
   }
   
-  console.log(`✅ Seeded ${DEFAULT_CLASSIFICATIONS.length} simple transaction classifications`);
+  console.log(`✅ Seeded ${DEFAULT_CLASSIFICATIONS.length} transaction classifications`);
 }
