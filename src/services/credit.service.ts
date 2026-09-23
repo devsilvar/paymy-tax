@@ -11,12 +11,53 @@ import {
   UpdateCreditInput,
   WriteOffCreditInput,
   CreditsQueryInput,
+  CreditLineItemInput,
 } from '@/validators/credit.validator';
 
 const TX_OPTIONS = { maxWait: 10000, timeout: 25000 };
 
+/**
+ * Computes line totals and grand total for credit items with 2-decimal rounding.
+ */
+export function computeCreditTotal(items: CreditLineItemInput[]): {
+  total: number;
+  lines: Array<{
+    name: string;
+    quantity: number;
+    unitPrice: number;
+    lineTotal: number;
+    sortOrder: number;
+  }>;
+} {
+  let total = 0;
+  const lines = items.map((item, index) => {
+    const lineTotal = Math.round(item.quantity * item.unitPrice * 100) / 100;
+    total = Math.round((total + lineTotal) * 100) / 100;
+    return {
+      name: item.name,
+      quantity: item.quantity,
+      unitPrice: item.unitPrice,
+      lineTotal,
+      sortOrder: index,
+    };
+  });
+  return { total, lines };
+}
+
 export async function createCredit(userId: string, businessId: string, data: CreateCreditInput) {
   await verifyBusinessOwnership(userId, businessId);
+
+  const hasItems = data.items !== undefined && data.items.length > 0;
+  const { total: computedTotal, lines } = hasItems
+    ? computeCreditTotal(data.items!)
+    : { total: 0, lines: [] };
+  const effectiveTotalAmount = hasItems ? computedTotal : data.totalAmount!;
+
+  let description = data.description;
+  if (!description && hasItems) {
+    const itemSummary = data.items!.map((i) => `${i.name} (${i.quantity})`).join(', ');
+    description = `${data.items!.length} item${data.items!.length > 1 ? 's' : ''}: ${itemSummary}`.slice(0, 500);
+  }
 
   return prisma.$transaction(async (tx) => {
     const credit = await tx.customerCredit.create({
@@ -25,9 +66,9 @@ export async function createCredit(userId: string, businessId: string, data: Cre
         customerName: data.customerName,
         customerEmail: data.customerEmail || null,
         customerPhone: data.customerPhone || null,
-        description: data.description,
-        totalAmount: data.totalAmount,
-        balance: data.totalAmount,
+        description: description || 'Credit obligation',
+        totalAmount: effectiveTotalAmount,
+        balance: effectiveTotalAmount,
         amountPaid: 0,
         issueDate: data.issueDate,
         dueDate: data.dueDate,
@@ -38,6 +79,20 @@ export async function createCredit(userId: string, businessId: string, data: Cre
         notes: data.notes || null,
         status: 'unpaid',
         createdBy: userId,
+        ...(hasItems
+          ? {
+              items: {
+                createMany: {
+                  data: lines,
+                },
+              },
+            }
+          : {}),
+      },
+      include: {
+        items: {
+          orderBy: { sortOrder: 'asc' },
+        },
       },
     });
 
@@ -49,8 +104,9 @@ export async function createCredit(userId: string, businessId: string, data: Cre
       resourceId: credit.id,
       newData: {
         customerName: data.customerName,
-        totalAmount: data.totalAmount,
+        totalAmount: effectiveTotalAmount,
         dueDate: data.dueDate,
+        itemsCount: hasItems ? lines.length : 0,
       },
     }, tx);
 
@@ -243,6 +299,9 @@ export async function listCredits(userId: string, businessId: string, query: Cre
       take: limit,
       orderBy: { dueDate: 'asc' },
       include: {
+        items: {
+          orderBy: { sortOrder: 'asc' },
+        },
         payments: {
           orderBy: { createdAt: 'desc' },
         },
@@ -271,6 +330,9 @@ export async function getCreditById(userId: string, businessId: string, creditId
   const credit = await prisma.customerCredit.findUnique({
     where: { id: creditId },
     include: {
+      items: {
+        orderBy: { sortOrder: 'asc' },
+      },
       payments: {
         orderBy: { createdAt: 'desc' },
         include: { linkedSale: true },
@@ -313,6 +375,9 @@ export async function updateCredit(userId: string, businessId: string, creditId:
     const updated = await tx.customerCredit.update({
       where: { id: creditId },
       data: {
+        ...(data.customerName !== undefined && { customerName: data.customerName }),
+        ...(data.customerPhone !== undefined && { customerPhone: data.customerPhone || null }),
+        ...(data.customerEmail !== undefined && { customerEmail: data.customerEmail || null }),
         description: data.description,
         dueDate: data.dueDate,
         reminderDate: data.reminderDate || null,

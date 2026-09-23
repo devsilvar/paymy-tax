@@ -593,6 +593,7 @@ model CustomerCredit {
   business   Business        @relation(fields: [businessId], references: [id], onDelete: Cascade)
   customer   Customer?       @relation(fields: [customerId], references: [id])
   payments   CreditPayment[]
+  items      CreditLineItem[]
 
   @@index([businessId, status])
   @@index([businessId, dueDate])
@@ -621,6 +622,23 @@ model CreditPayment {
   @@index([creditId])
   @@index([paymentDate])
   @@map("credit_payments")
+}
+
+/// Individual line items for a customer credit (mirrors SaleLineItem for sales).
+/// Stores the product/service breakdown when a multi-item basket sale is given on credit.
+model CreditLineItem {
+  id        String         @id @default(uuid())
+  creditId  String         @map("credit_id")
+  name      String         @db.VarChar(200)
+  quantity  Decimal        @default(1) @db.Decimal(12, 2)
+  unitPrice Decimal        @map("unit_price") @db.Decimal(15, 2)
+  lineTotal Decimal        @map("line_total") @db.Decimal(15, 2)
+  sortOrder Int            @default(0) @map("sort_order")
+  createdAt DateTime       @default(now()) @map("created_at")
+  credit    CustomerCredit @relation(fields: [creditId], references: [id], onDelete: Cascade)
+
+  @@index([creditId, sortOrder])
+  @@map("credit_line_items")
 }
 
 /// Audit log of every inbound Paystack webhook. Rows are written BEFORE

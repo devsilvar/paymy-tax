@@ -203,7 +203,35 @@ export async function register(input: RegisterInput) {
 
   logger.info('User registered', { userId: user.id, email: user.email });
 
+  // Fire-and-forget welcome email — must never block or fail registration.
+  void sendWelcomeEmail(user.id, user.email);
+
   return { user: sanitizeUser(user), ...tokens };
+}
+
+async function sendWelcomeEmail(userId: string, email: string) {
+  try {
+    const { sendEmail } = await import('@/lib/email');
+    const { generateWelcomeHtml, generateWelcomeText } = await import('@/lib/email/templates/welcome');
+
+    const frontendUrl = config.cors.frontendUrl.split(',')[0].trim();
+    const dashboardLink = `${frontendUrl}/dashboard`;
+
+    const result = await sendEmail({
+      to: email,
+      subject: 'Welcome to PayMyTax',
+      html: generateWelcomeHtml({ userEmail: email, dashboardLink }),
+      text: generateWelcomeText({ userEmail: email, dashboardLink }),
+    });
+
+    logger.info('Welcome email sent', { userId, email, delivered: result.delivered });
+  } catch (err) {
+    logger.error('Welcome email failed to send', {
+      userId,
+      email,
+      error: err instanceof Error ? err.message : String(err),
+    });
+  }
 }
 
 export async function login(input: LoginInput, ipAddress?: string, userAgent?: string) {

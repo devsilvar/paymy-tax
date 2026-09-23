@@ -64,6 +64,7 @@ export async function getUnifiedLedger(
           where: {
             businessId,
             source: 'bank_transfer',
+            dvaOrigin: true,
             // Settled statuses only — 'confirmed' is canonical, 'completed'
             // is the legacy manual-entry status.
             status: { in: SETTLED_SALE_STATUSES },
@@ -94,6 +95,7 @@ export async function getUnifiedLedger(
           where: {
             businessId,
             source: 'bank_transfer',
+            dvaOrigin: true,
             status: { in: SETTLED_SALE_STATUSES },
             settledViaSplit: true,
             transactionDate: { lt: fromDate },
@@ -135,6 +137,7 @@ export async function getUnifiedLedger(
   const salesWhere: any = { businessId };
   if (scope === 'dva_bank') {
     salesWhere.source = 'bank_transfer';
+    salesWhere.dvaOrigin = true;
   }
   if (fromDate || toDate) {
     salesWhere.transactionDate = {};
@@ -199,7 +202,7 @@ export async function getUnifiedLedger(
     const amount = toNumber(s.amount);
 
     let sourceType: UnifiedLedgerRow['sourceType'] = 'manual_sale';
-    if (s.source === 'bank_transfer') sourceType = 'dva_transfer';
+    if (s.source === 'bank_transfer' && (s as any).dvaOrigin) sourceType = 'dva_transfer';
     else if (s.source === 'pos') sourceType = 'pos';
     else if (s.source === 'invoice') sourceType = 'invoice_payment';
 
@@ -207,13 +210,13 @@ export async function getUnifiedLedger(
       sortDate: dateObj,
       item: {
         id: s.id,
-        scope: s.source === 'bank_transfer' ? 'dva_bank' : 'general_sales',
+        scope: s.source === 'bank_transfer' && (s as any).dvaOrigin ? 'dva_bank' : 'general_sales',
         entryType: 'credit',
         sourceType,
         amount,
         runningBalance: 0, // Calculated below
         classification: s.classification?.name || s.finalClassification || 'revenue',
-        description: s.description || (s.source === 'bank_transfer' ? 'DVA Transfer Inflow' : 'Sales Revenue'),
+        description: s.description || (sourceType === 'dva_transfer' ? 'DVA Transfer Inflow' : 'Sales Revenue'),
         reference: s.referenceId || s.id,
         date: dateObj.toISOString(),
         status:
