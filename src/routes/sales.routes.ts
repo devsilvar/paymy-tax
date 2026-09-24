@@ -69,6 +69,9 @@ router.post(
 );
 router.post('/import/commit', salesImportController.commit);
 
+// ─── Sales PDF Report ───────────────────────────────────────
+import * as reportController from '@/controllers/report.controller';
+router.get('/report/pdf', reportController.downloadSalesReport);
 // ─── Dynamic routes (must come last) ────────────────────────
 
 router.get('/:id', salesController.getById);

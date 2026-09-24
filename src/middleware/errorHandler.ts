@@ -120,7 +120,7 @@ export const errorHandler = (
       default:
         statusCode = 500;
         errorCode = 'DATABASE_ERROR';
-        message = 'Database operation failed';
+        message = 'Connection error. Please check your network and try again';
     }
   }
 
