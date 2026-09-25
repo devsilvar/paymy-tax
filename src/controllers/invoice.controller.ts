@@ -187,3 +187,18 @@ export const downloadPublicPdf = asyncHandler(async (req: AuthenticatedRequest, 
   });
   res.send(buffer);
 });
+
+export const reconcileDva = asyncHandler(async (req: AuthenticatedRequest, res: Response) => {
+  const invoice = await invoiceService.reconcileDvaTransferToInvoice(
+    req.user!.userId,
+    req.params.businessId,
+    req.params.id,
+    req.params.saleId,
+  );
+
+  res.status(200).json({
+    success: true,
+    data: invoice,
+    message: 'DVA transfer matched to invoice successfully',
+  });
+});

@@ -29,6 +29,7 @@ router.post('/validate-customer', dvaController.validateCustomer);
 router.get('/virtual-account', dvaController.getVirtualAccount);
 router.get('/balance', dvaController.getBalance);
 router.get('/transactions', dvaController.getDVATransactions);
+router.get('/account-summary', dvaController.getAccountSummary);
 router.post('/requery', dvaController.requery);
 router.post('/settlement/resolve', dvaController.resolveSettlement);
 router.post('/settlement/connect', dvaController.connectSettlement);

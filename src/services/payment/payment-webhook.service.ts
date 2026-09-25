@@ -315,37 +315,70 @@ export async function processWebhook(signature: string, rawBody: string) {
         include: { business: { select: { userId: true, businessName: true } } },
       });
 
-      if (payout) {
-        const wasCompleted = payout.status === 'completed';
+      if (payout && payout.business?.userId) {
+        const userId = payout.business.userId;
 
-        await prisma.settlementPayout.update({
-          where: { id: payout.id },
-          data: {
-            status: 'completed',
-            completedAt: new Date(),
-          },
-        });
+        // Atomically claim completion and settle debit in one transaction fence
+        let didComplete = false;
+        try {
+          didComplete = await prisma.$transaction(async (tx) => {
+            // Atomic conditional transition: only transition if not already completed
+            const updated = await tx.settlementPayout.updateMany({
+              where: {
+                id: payout.id,
+                status: { not: 'completed' },
+              },
+              data: {
+                status: 'completed',
+                completedAt: new Date(),
+              },
+            });
 
-        // Settle wallet payout debit if not already settled
-        if (!wasCompleted && payout.business?.userId) {
-          await WalletService.settlePayoutDebit({
-            userId: payout.business.userId,
-            businessId: payout.businessId,
-            amount: payout.amount,
-            fee: 0,
-            reference: payout.transferReference,
-            linkedPayoutId: payout.id,
-            description: `Settlement payout completed to ${payout.destinationBankName}`,
+            if (updated.count === 0) {
+              return false; // Already completed by prior webhook or admin action
+            }
+
+            // Settle wallet payout debit within the same transaction fence
+            await WalletService.settlePayoutDebit(
+              {
+                userId,
+                businessId: payout.businessId,
+                amount: payout.amount,
+                fee: 0,
+                reference: payout.transferReference,
+                linkedPayoutId: payout.id,
+                description: `Settlement payout completed to ${payout.destinationBankName}`,
+              },
+              tx
+            );
+
+            return true;
           });
-
-          // Post-commit event emission for webhook completion
-          eventBus.emit('payout.completed', {
-            userId: payout.business.userId,
-            payoutId: payout.id,
-            amount: toNumber(payout.amount),
-            reference: payout.transferReference,
-          });
+        } catch (txErr: any) {
+          // If already settled (e.g. duplicate reference in walletTransaction), gracefully handle
+          if (txErr.code === 'P2002') {
+            logger.info('Duplicate payout wallet debit ignored (already settled)', { payoutId: payout.id, ref });
+            didComplete = false;
+          } else {
+            throw txErr;
+          }
         }
+
+        if (!didComplete) {
+          logger.info('Duplicate transfer.success webhook delivery ignored — payout already settled', {
+            payoutId: payout.id,
+            reference: ref,
+          });
+          return;
+        }
+
+        // Post-commit side effects: event emission, audit, and user reminders
+        eventBus.emit('payout.completed', {
+          userId,
+          payoutId: payout.id,
+          amount: toNumber(payout.amount),
+          reference: payout.transferReference,
+        });
 
         logAudit({
           businessId: payout.businessId,
@@ -397,27 +430,50 @@ export async function processWebhook(signature: string, rawBody: string) {
         include: { business: { select: { userId: true } } },
       });
 
-      if (payout) {
-        const wasPendingOrProcessing =
-          payout.status === 'pending' || payout.status === 'processing';
+      if (payout && payout.business?.userId) {
+        const userId = payout.business.userId;
 
-        await prisma.settlementPayout.update({
-          where: { id: payout.id },
-          data: {
-            status: 'failed',
-            failureReason: reason,
-          },
+        // Atomically transition status from pending/processing -> failed AND release locked funds in one transaction fence
+        const didFail = await prisma.$transaction(async (tx) => {
+          const updated = await tx.settlementPayout.updateMany({
+            where: {
+              id: payout.id,
+              status: { in: ['pending', 'processing'] },
+            },
+            data: {
+              status: 'failed',
+              failureReason: reason,
+            },
+          });
+
+          // If another worker or previous webhook already transitioned the payout, do not release funds again!
+          if (updated.count === 0) {
+            return false;
+          }
+
+          // Release locked funds back to available wallet balance inside the transaction
+          await WalletService.releaseLockedFunds(
+            {
+              userId,
+              amount: payout.amount,
+              fee: 0,
+            },
+            tx
+          );
+
+          return true;
         });
 
-        // Release locked funds back to available wallet balance
-        if (wasPendingOrProcessing && payout.business?.userId) {
-          await WalletService.releaseLockedFunds({
-            userId: payout.business.userId,
-            amount: payout.amount,
-            fee: 0,
+        if (!didFail) {
+          logger.info('Duplicate transfer.failed webhook ignored — payout already finalized/released', {
+            payoutId: payout.id,
+            reference: ref,
+            currentStatus: payout.status,
           });
+          return;
         }
 
+        // Post-commit side effects: audit and user reminder
         logAudit({
           businessId: payout.businessId,
           action: 'settlement.payout_failed',

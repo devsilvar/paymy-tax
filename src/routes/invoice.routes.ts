@@ -16,6 +16,7 @@ router.delete('/:id', invoiceController.remove);
 router.post('/:id/send', invoiceController.send);
 router.post('/:id/send-whatsapp', invoiceController.sendByWhatsApp);
 router.post('/:id/mark-paid', invoiceController.markPaid);
+router.post('/:id/reconcile-dva/:saleId', invoiceController.reconcileDva);
 router.post('/:id/cancel', invoiceController.cancel);
 
 // PDF download

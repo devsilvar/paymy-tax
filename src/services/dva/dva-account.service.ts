@@ -7,6 +7,8 @@ import { getPaymentProvider } from '@/lib/payment';
 import { verifyBusinessOwnership, invalidateOwnershipCache } from '@/lib/ownership';
 import { SetupVirtualAccountInput } from '@/validators/dva.validator';
 import { encrypt, computeBlindIndex } from '@/lib/crypto';
+import { getPayoutPreview } from '@/services/settlement/payout-preview.service';
+import { SETTLED_SALE_STATUSES, toNumber } from '@/shared/helpers';
 
 // ─── Helpers ────────────────────────────────────────────────
 
@@ -599,5 +601,36 @@ export async function getDVATransactions(
       hasNext: page * limit < total,
       hasPrev: page > 1,
     },
+  };
+}
+
+// ─── DVA Account Summary (Composite endpoint) ───────────────
+
+export async function getAccountSummary(userId: string, businessId: string) {
+  const now = new Date();
+  const startOfMonthUTC = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1));
+  const startOfNextMonthUTC = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() + 1, 1));
+
+  const [dva, transactionsResult, preview, monthlyAgg] = await Promise.all([
+    getVirtualAccount(userId, businessId),
+    getDVATransactions(userId, businessId, { page: 1, limit: 50 }),
+    getPayoutPreview(userId, businessId),
+    prisma.salesTransaction.aggregate({
+      where: {
+        businessId,
+        source: 'bank_transfer',
+        dvaOrigin: true,
+        status: { in: SETTLED_SALE_STATUSES },
+        transactionDate: { gte: startOfMonthUTC, lt: startOfNextMonthUTC },
+      },
+      _sum: { amount: true },
+    }),
+  ]);
+
+  return {
+    dva,
+    transactions: transactionsResult.transactions,
+    ledgerBalance: preview.availableForWithdrawal,
+    receivedThisMonth: toNumber(monthlyAgg._sum.amount ?? 0),
   };
 }

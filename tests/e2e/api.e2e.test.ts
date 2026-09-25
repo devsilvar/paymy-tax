@@ -34,8 +34,16 @@ const adminAuth = () => ({ Authorization: `Bearer ${adminToken}` });
 beforeAll(async () => {
   jest.setTimeout(60000);
   app = createApp();
-  await prisma.$connect();
-});
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    try {
+      await prisma.$connect();
+      break;
+    } catch (err) {
+      if (attempt === 3) throw err;
+      await new Promise((r) => setTimeout(r, 2000));
+    }
+  }
+}, 60000);
 
 describe('PayMyTax E2E', () => {
   // ═══════════════════════════════════════
@@ -2273,6 +2281,85 @@ describe('PayMyTax E2E', () => {
         .delete(`/api/v1/businesses/${testBusinessId}`)
         .set(auth());
     });
+  });
+
+  // ═══════════════════════════════════════
+  // DVA ACCOUNT SUMMARY (Phase 10)
+  // ═══════════════════════════════════════
+  describe('DVA Account Summary', () => {
+    beforeAll(async () => {
+      if (!businessId || !accessToken) {
+        const loginRes = await request(app)
+          .post('/api/v1/auth/login')
+          .send({ email: 'john@example.com', password: 'Password123!' });
+
+        if (loginRes.body?.data?.accessToken) {
+          accessToken = loginRes.body.data.accessToken;
+          userId = loginRes.body.data.user?.id || '';
+          const biz = await prisma.business.findFirst({ where: { userId } });
+          if (biz) {
+            businessId = biz.id;
+          }
+        }
+
+        if (!businessId) {
+          const bizRes = await request(app)
+            .post('/api/v1/businesses')
+            .set(auth())
+            .send({
+              businessName: 'DVA Test Biz',
+              ownerName: 'John Doe',
+              businessType: 'retail',
+            });
+          businessId = bizRes.body.data?.id;
+        }
+      }
+    }, 60000);
+
+    it('GET /businesses/:id/dva/account-summary (happy path) → 200 + payload shape', async () => {
+      const res = await request(app)
+        .get(`/api/v1/businesses/${businessId}/dva/account-summary`)
+        .set(auth());
+
+      expect(res.status).toBe(200);
+      expect(res.body.success).toBe(true);
+      expect(res.body.data).toHaveProperty('dva');
+      expect(res.body.data).toHaveProperty('transactions');
+      expect(res.body.data).toHaveProperty('ledgerBalance');
+      expect(res.body.data).toHaveProperty('receivedThisMonth');
+      expect(typeof res.body.data.ledgerBalance).toBe('number');
+      expect(typeof res.body.data.receivedThisMonth).toBe('number');
+      expect(Array.isArray(res.body.data.transactions)).toBe(true);
+    }, 30000);
+
+    it('GET /businesses/:id/dva/account-summary (no auth) → 401', async () => {
+      const res = await request(app)
+        .get(`/api/v1/businesses/${businessId}/dva/account-summary`);
+
+      expect(res.status).toBe(401);
+    }, 30000);
+
+    it('GET /businesses/:id/dva/account-summary (foreign business) → 403 or 404', async () => {
+      const foreignBiz = await prisma.business.findFirst({
+        where: { userId: { not: userId } },
+      });
+      if (foreignBiz) {
+        const res = await request(app)
+          .get(`/api/v1/businesses/${foreignBiz.id}/dva/account-summary`)
+          .set(auth());
+
+        expect([403, 404]).toContain(res.status);
+      }
+    }, 30000);
+
+    it('GET /businesses/:id/dva/account-summary (non-existent business) → 403 or 404', async () => {
+      const fakeId = '00000000-0000-0000-0000-000000000000';
+      const res = await request(app)
+        .get(`/api/v1/businesses/${fakeId}/dva/account-summary`)
+        .set(auth());
+
+      expect([403, 404]).toContain(res.status);
+    }, 30000);
   });
 
   // ═══════════════════════════════════════

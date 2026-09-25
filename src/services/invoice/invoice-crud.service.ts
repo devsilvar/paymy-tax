@@ -634,6 +634,194 @@ export async function markInvoicePaid(
   });
 }
 
+const TX_OPTIONS = { maxWait: 10000, timeout: 25000 };
+
+/**
+ * Reconcile an unverified incoming DVA bank transfer with an outstanding invoice.
+ * Reuses the existing SalesTransaction (preventing double-counting revenue),
+ * marks it verified and confirmed, links it to the invoice, and flips the invoice to 'paid'.
+ */
+export async function reconcileDvaTransferToInvoice(
+  userId: string,
+  businessId: string,
+  invoiceId: string,
+  saleId: string,
+) {
+  return prisma.$transaction(async (tx) => {
+    // 1. Verify business ownership within transaction context (cache-bypassing)
+    await verifyBusinessOwnership(userId, businessId, tx);
+
+    // 2. Fetch and validate the incoming sale transaction
+    const sale = await tx.salesTransaction.findUnique({
+      where: { id: saleId },
+    });
+
+    if (!sale || sale.businessId !== businessId) {
+      throw new AppError(404, 'Sale transaction not found', 'SALE_NOT_FOUND');
+    }
+
+    if (!sale.dvaOrigin && !sale.needsVerification && sale.source !== 'bank_transfer') {
+      throw new AppError(
+        400,
+        'Transaction is not eligible for DVA reconciliation',
+        'INVALID_RECONCILIATION',
+      );
+    }
+
+    // 3. Cross-reconciliation guards: check BOTH invoice and creditPayment tables
+    const existingInvoiceLink = await tx.invoice.findFirst({
+      where: { linkedSaleId: saleId },
+    });
+    if (existingInvoiceLink) {
+      throw new AppError(
+        409,
+        'This transfer is already linked to an invoice',
+        'SALE_ALREADY_RECONCILED',
+      );
+    }
+
+    const existingCreditLink = await tx.creditPayment.findFirst({
+      where: { linkedSaleId: saleId },
+    });
+    if (existingCreditLink) {
+      throw new AppError(
+        409,
+        'This transfer is already linked to a customer debt/credit settlement',
+        'SALE_ALREADY_RECONCILED',
+      );
+    }
+
+    // 4. Fetch and validate invoice
+    const invoice = await tx.invoice.findUnique({
+      where: { id: invoiceId },
+    });
+
+    if (!invoice || invoice.businessId !== businessId) {
+      throw new AppError(404, 'Invoice not found', 'INVOICE_NOT_FOUND');
+    }
+
+    if (invoice.status === 'paid') {
+      throw new AppError(409, 'Invoice is already paid', 'INVOICE_ALREADY_PAID');
+    }
+    if (invoice.status === 'cancelled') {
+      throw new AppError(
+        409,
+        'Cannot pay a cancelled invoice. Create a new invoice instead.',
+        'INVOICE_CANCELLED',
+      );
+    }
+    if (invoice.status === 'draft') {
+      throw new AppError(
+        409,
+        'Send the invoice to the customer before matching it with a payment',
+        'INVOICE_NOT_SENT',
+      );
+    }
+    if (invoice.linkedSaleId) {
+      throw new AppError(
+        409,
+        'Invoice already has a linked sale transaction',
+        'INVOICE_ALREADY_PAID',
+      );
+    }
+
+    // 5. Enforce exact amount match
+    const saleAmount = toNumber(sale.amount);
+    const invoiceTotal = toNumber(invoice.total);
+    if (Math.abs(saleAmount - invoiceTotal) > 0.01) {
+      throw new AppError(
+        400,
+        `Transfer amount (₦${saleAmount.toLocaleString()}) does not match invoice total (₦${invoiceTotal.toLocaleString()}) exactly`,
+        'AMOUNT_MISMATCH',
+      );
+    }
+
+    // 6. Look up taxable classification for invoice revenue
+    const classification = await tx.transactionClassification.findFirst({
+      where: { name: 'Product Sale', isActive: true },
+    });
+
+    // 7. Update SalesTransaction:
+    // - Preserve original referenceId (Paystack transfer reference)
+    // - Preserve source ('bank_transfer') for wallet ledger categorization
+    // - Merge metadata to retain original DVA webhook payload
+    // - Mark verified, confirmed, taxable, and set classification
+    const existingMetadata = (sale.metadata && typeof sale.metadata === 'object')
+      ? (sale.metadata as Record<string, unknown>)
+      : {};
+
+    await tx.salesTransaction.update({
+      where: { id: saleId },
+      data: {
+        needsVerification: false,
+        verifiedAt: new Date(),
+        verifiedBy: userId,
+        status: 'confirmed',
+        isTaxable: true,
+        finalClassification: classification?.name ?? 'Product Sale',
+        classificationId: classification?.id ?? null,
+        customerName: invoice.customerName,
+        description: `Invoice ${invoice.invoiceNumber} — ${invoice.customerName}`,
+        metadata: {
+          ...existingMetadata,
+          invoiceReconciliation: {
+            invoiceId: invoice.id,
+            invoiceNumber: invoice.invoiceNumber,
+            reconciledAt: new Date().toISOString(),
+            reconciledBy: userId,
+          },
+        },
+      },
+    });
+
+    // 8. Update Invoice
+    const updated = await tx.invoice.update({
+      where: { id: invoiceId },
+      data: {
+        status: 'paid',
+        paidAt: sale.transactionDate,
+        paymentMethod: 'bank_transfer',
+        linkedSaleId: sale.id,
+      },
+      include: {
+        lines: { orderBy: { sortOrder: 'asc' } },
+        linkedSale: true,
+      },
+    });
+
+    // 9. Transactional audit log
+    await logAudit(
+      {
+        userId,
+        businessId,
+        action: 'invoice.dva_reconciled',
+        resourceType: 'invoice',
+        resourceId: invoiceId,
+        oldData: { status: invoice.status },
+        newData: {
+          status: 'paid',
+          paidAt: sale.transactionDate,
+          paymentMethod: 'bank_transfer',
+          linkedSaleId: sale.id,
+          saleAmount,
+        },
+      },
+      tx,
+    );
+
+    logger.info('Invoice reconciled with DVA transfer', {
+      invoiceId,
+      invoiceNumber: invoice.invoiceNumber,
+      saleId,
+      saleAmount,
+      businessId,
+      userId,
+    });
+
+    return updated;
+  }, TX_OPTIONS);
+}
+
 export async function cancelInvoice(
   userId: string,
   businessId: string,
